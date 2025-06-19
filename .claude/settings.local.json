@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(mix compile)",
-      "Bash(elixir:*)"
+      "Bash(elixir:*)",
+      "Bash(mix test:*)",
+      "Bash(mix compile:*)"
     ],
     "deny": []
   }
