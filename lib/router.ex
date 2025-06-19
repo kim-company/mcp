@@ -3,9 +3,9 @@ defmodule MCP.Router do
 
   import Plug.Conn
 
-  plug :match
-  plug :check_remote_ip
-  plug :dispatch
+  plug(:match)
+  plug(:check_remote_ip)
+  plug(:dispatch)
 
   get "/" do
     conn
