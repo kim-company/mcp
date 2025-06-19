@@ -8,6 +8,8 @@ defmodule MCP.Application do
   @impl true
   def start(_type, _args) do
     children = [
+      # Registry for MCP sessions
+      {Registry, keys: :unique, name: MCP.Registry}
       # Starts a worker by calling: MCP.Worker.start_link(arg)
       # {MCP.Worker, arg}
     ]

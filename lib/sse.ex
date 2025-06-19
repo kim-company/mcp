@@ -66,6 +66,11 @@ defmodule MCP.SSE do
               Logger.debug("Sending SSE response: #{inspect(response, pretty: true)}")
               Connection.send_sse_message(connection_pid, response)
               conn |> put_status(202) |> send_json(%{status: "ok"})
+            
+            {:error, error_response} ->
+              Logger.debug("Sending SSE error response: #{inspect(error_response, pretty: true)}")
+              Connection.send_sse_message(connection_pid, error_response)
+              conn |> put_status(202) |> send_json(%{status: "ok"})
           end
 
         %{"method" => "notifications/initialized"} ->

@@ -4,7 +4,8 @@
       "Bash(mix compile)",
       "Bash(elixir:*)",
       "Bash(mix test:*)",
-      "Bash(mix compile:*)"
+      "Bash(mix compile:*)",
+      "WebFetch(domain:spec.modelcontextprotocol.io)"
     ],
     "deny": []
   }

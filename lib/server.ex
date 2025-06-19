@@ -53,7 +53,15 @@ defmodule MCP.Server do
          }}
 
       {:error, reason} ->
-        {:error, reason}
+        {:error,
+         %{
+           jsonrpc: "2.0",
+           id: request_id,
+           error: %{
+             code: -32602,
+             message: reason
+           }
+         }}
     end
   end
 
