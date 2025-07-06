@@ -1,2 +1,0 @@
-defmodule MCP do
-end

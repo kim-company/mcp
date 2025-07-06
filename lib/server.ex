@@ -53,15 +53,7 @@ defmodule MCP.Server do
          }}
 
       {:error, reason} ->
-        {:error,
-         %{
-           jsonrpc: "2.0",
-           id: request_id,
-           error: %{
-             code: -32602,
-             message: reason
-           }
-         }}
+        {:error, reason}
     end
   end
 
@@ -80,37 +72,29 @@ defmodule MCP.Server do
   ## handle_message function for SSE plug
 
   # Built-in message routing
-  def handle_message(%{"method" => "notifications/initialized"} = message, _state_pid) do
-    Logger.info("Received initialized notification")
-    Logger.debug("Full message: #{inspect(message, pretty: true)}")
+  def handle_message(%{"method" => method = "notifications/initialized"}, _state_pid) do
+    Logger.info("Notification received", method: method)
     {:ok, nil}
   end
 
   def handle_message(%{"method" => method, "id" => id} = message, state_pid) do
-    Logger.info("Routing MCP message - Method: #{method}, ID: #{id}")
-    Logger.debug("Full message: #{inspect(message, pretty: true)}")
+    Logger.info("MCP message received", method: method, request_id: id)
 
     case method do
       "ping" ->
-        Logger.debug("Handling ping request")
         handle_ping(id)
 
       "initialize" ->
-        Logger.info("Handling initialize request with params: #{inspect(message["params"], pretty: true)}")
-
         handle_initialize(id, message["params"], state_pid)
 
       "tools/list" ->
-        Logger.debug("Handling tools list request")
         handle_list_tools(id, message["params"], state_pid)
 
       "tools/call" ->
-        Logger.debug("Handling tool call request with params: #{inspect(message["params"], pretty: true)}")
-
         safe_call_tool(id, message["params"], state_pid)
 
       other ->
-        Logger.warning("Received unsupported method: #{other}")
+        Logger.warning("Received unsupported method: #{inspect(other)}")
 
         {:error,
          %{
@@ -127,53 +111,21 @@ defmodule MCP.Server do
     end
   end
 
-  def handle_message_async(%{"method" => method, "id" => id} = message, state_pid) do
-    Logger.info("Routing MCP message async - Method: #{method}, ID: #{id}")
-    Logger.debug("Full message: #{inspect(message, pretty: true)}")
+  def handle_message(unknown_message, _state_pid) do
+    Logger.error("Received invalid message format: #{inspect(unknown_message, pretty: true)}")
 
-    case method do
-      "ping" ->
-        Logger.debug("Handling ping request")
-        response = handle_ping(id)
-        send_async_response(response, state_pid)
-
-      "initialize" ->
-        Logger.info("Handling initialize request with params: #{inspect(message["params"], pretty: true)}")
-        response = handle_initialize(id, message["params"], state_pid)
-        send_async_response(response, state_pid)
-
-      "tools/list" ->
-        Logger.debug("Handling tools list request")
-        response = handle_list_tools(id, message["params"], state_pid)
-        send_async_response(response, state_pid)
-
-      "tools/call" ->
-        Logger.debug("Handling tool call request async with params: #{inspect(message["params"], pretty: true)}")
-        
-        Task.start(fn ->
-          response = safe_call_tool(id, message["params"], state_pid)
-          send_async_response(response, state_pid)
-        end)
-
-      other ->
-        Logger.warning("Received unsupported method: #{other}")
-
-        error_response = {:error,
-         %{
-           jsonrpc: "2.0",
-           id: id,
-           error: %{
-             code: -32601,
-             message: "Method not found",
-             data: %{
-               name: other
-             }
-           }
-         }}
-        send_async_response(error_response, state_pid)
-    end
-    
-    :ok
+    {:error,
+     %{
+       jsonrpc: "2.0",
+       id: nil,
+       error: %{
+         code: -32600,
+         message: "Invalid Request",
+         data: %{
+           received: unknown_message
+         }
+       }
+     }}
   end
 
   @impl true
@@ -258,6 +210,9 @@ defmodule MCP.Server do
       %{^name => callback} when is_function(callback, 1) ->
         callback.(args)
 
+      %{^name => callback} when is_function(callback, 0) ->
+        callback.()
+
       _ ->
         {:error,
          %{
@@ -321,19 +276,12 @@ defmodule MCP.Server do
         {:error, "Protocol version is required"}
 
       client_version < unquote(@protocol_version) ->
-        {:error, "Unsupported protocol version. Server supports #{unquote(@protocol_version)} or later"}
+        {:error,
+         "Unsupported protocol version. Server supports #{unquote(@protocol_version)} or later"}
 
       true ->
         :ok
     end
-  end
-
-  defp send_async_response({:ok, response}, state_pid) do
-    MCP.Connection.send_sse_message(state_pid, response)
-  end
-
-  defp send_async_response({:error, error_response}, state_pid) do
-    MCP.Connection.send_sse_message(state_pid, error_response)
   end
 
   defp safe_call_tool(request_id, params, state_pid) do

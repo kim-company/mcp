@@ -44,9 +44,14 @@ defmodule MCP.SSE do
   def handle_message(conn) do
     # TODO: this function should return immediately as the response is set in the
     # async SSE connection.
-    Logger.info("Received POST message")
     params = conn.body_params
-    Logger.debug("Raw params: #{inspect(params, pretty: true)}")
+
+    Logger.debug("""
+    Handle message called
+    ---
+    params: #{inspect(params, pretty: true)}
+    ---
+    """)
 
     with {:ok, session_id} <- get_session_id(conn),
          {:ok, connection_pid} <- lookup_session(session_id),
@@ -57,19 +62,20 @@ defmodule MCP.SSE do
       # Handle initialization sequence
       case message do
         %{"method" => "initialize"} = msg ->
-          Logger.info("Routing MCP message - Method: initialize, ID: #{msg["id"]}")
-          Logger.debug("Full message: #{inspect(msg, pretty: true)}")
+          Logger.debug("""
+          Routing initialize
+          ---
+          id: #{msg["id"]}
+          msg: #{inspect(msg, pretty: true)}
+          ---
+          """)
+
           Connection.handle_initialize(connection_pid)
 
           case MCP.Server.handle_message(msg, connection_pid) do
             {:ok, response} ->
               Logger.debug("Sending SSE response: #{inspect(response, pretty: true)}")
               Connection.send_sse_message(connection_pid, response)
-              conn |> put_status(202) |> send_json(%{status: "ok"})
-            
-            {:error, error_response} ->
-              Logger.debug("Sending SSE error response: #{inspect(error_response, pretty: true)}")
-              Connection.send_sse_message(connection_pid, error_response)
               conn |> put_status(202) |> send_json(%{status: "ok"})
           end
 
@@ -79,7 +85,13 @@ defmodule MCP.SSE do
 
         %{"method" => "notifications/cancelled"} ->
           # Just log the cancellation notification and return ok
-          Logger.info("Request cancelled: #{inspect(message["params"])}")
+          Logger.debug("""
+          Request cancelled
+          ---
+          params: #{inspect(message["params"], pretty: true)}
+          ---
+          """)
+
           conn |> put_status(202) |> send_json(%{status: "ok"})
 
         %{"id" => id, "result" => _} ->
@@ -96,9 +108,31 @@ defmodule MCP.SSE do
           if not Map.has_key?(message, "id") do
             conn |> put_status(202) |> send_json(%{status: "ok"})
           else
-            # Handle requests asynchronously - response is sent over SSE connection
-            Server.handle_message_async(message, connection_pid)
-            conn |> put_status(202) |> send_json(%{status: "accepted"})
+            # Handle requests that expect responses
+            # TODO: we can always directly reply with 202 Accepted here, the response
+            # is sent over the SSE connection
+            case Server.handle_message(message, connection_pid) do
+              {:ok, nil} ->
+                conn |> put_status(202) |> send_json(%{status: "ok"})
+
+              {:ok, response} ->
+                Logger.debug("""
+                 Sending SSE response
+                 ---
+                #{inspect(response, pretty: true)}
+                """)
+
+                Connection.send_sse_message(connection_pid, response)
+                conn |> put_status(202) |> send_json(%{status: "ok"})
+
+              {:error, error_response} ->
+                Logger.warning("Error handling message: #{inspect(error_response)}")
+                # Send error response via SSE to match JSON-RPC 2.0 spec
+                Connection.send_sse_message(connection_pid, error_response)
+                # we still reply with 202, because some clients abort the connection
+                # when they receive a non-200 response
+                conn |> put_status(202) |> send_json(%{status: "ok"})
+            end
           end
       end
     else
@@ -123,13 +157,13 @@ defmodule MCP.SSE do
   defp send_json(conn, data) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(conn.status || 200, Jason.encode!(data))
+    |> send_resp(conn.status || 200, JSON.encode!(data))
   end
 
   defp send_error(conn, status, message) do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(status, Jason.encode!(%{error: message}))
+    |> send_resp(status, JSON.encode!(%{error: message}))
   end
 
   defp send_jsonrpc_error(conn, id, code, message, data \\ nil) do
@@ -148,7 +182,7 @@ defmodule MCP.SSE do
 
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(response))
+    |> send_resp(200, JSON.encode!(response))
   end
 
   defp setup_sse_connection(conn) do

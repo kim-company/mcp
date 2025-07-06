@@ -41,7 +41,7 @@ defmodule MCP.Connection do
 
   @impl GenServer
   def init({session_id, conn}) do
-    Logger.metadata(mcp: true)
+    Logger.metadata(session_id: session_id, mcp: true)
     # Start initialization timeout
     Process.send_after(self(), :init_timeout, @init_timeout)
     # Start inactivity timeout
@@ -262,8 +262,8 @@ defmodule MCP.Connection do
     end
   end
 
-  defp close_connection(conn, session_id, reason) do
-    Logger.info("Closing SSE connection. Session ID: #{session_id}, Reason: #{reason}")
+  defp close_connection(conn, _session_id, reason) do
+    Logger.info("Closing SSE connection: #{inspect(reason)}")
 
     case chunk(conn, "event: close\ndata: #{reason}\n\n") do
       {:ok, conn} -> halt(conn)
@@ -272,8 +272,7 @@ defmodule MCP.Connection do
   end
 
   defp handle_sse_message(conn, _session_id, msg) do
-    sse_message = ["event: message\ndata: ", Jason.encode_to_iodata!(msg), "\n\n"]
-    Logger.debug("Sending SSE message:\n#{sse_message}")
+    sse_message = ["event: message\ndata: ", JSON.encode_to_iodata!(msg), "\n\n"]
 
     case chunk(conn, sse_message) do
       {:ok, conn} -> {:ok, conn}
@@ -292,7 +291,7 @@ defmodule MCP.Connection do
 
     case chunk(state.conn, [
            "event: message\ndata: ",
-           Jason.encode_to_iodata!(ping_notification),
+           JSON.encode_to_iodata!(ping_notification),
            "\n\n"
          ]) do
       {:ok, conn} -> {:ok, %{state | conn: conn}}

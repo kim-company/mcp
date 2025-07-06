@@ -10,8 +10,6 @@ defmodule MCP.Application do
     children = [
       # Registry for MCP sessions
       {Registry, keys: :unique, name: MCP.Registry}
-      # Starts a worker by calling: MCP.Worker.start_link(arg)
-      # {MCP.Worker, arg}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
