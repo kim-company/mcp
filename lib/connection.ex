@@ -5,7 +5,15 @@ defmodule MCP.Connection do
   use GenServer
   require Logger
 
-  @type init_callback_result :: {:ok, %{tools: list(), server_info: map()}} | {:error, String.t()}
+  @type init_callback_result ::
+          {:ok, %{tools: list(tool_spec()), server_info: map()}} | {:error, String.t()}
+
+  @type tool_spec :: %{
+          name: String.t(),
+          description: String.t(),
+          input_schema: map(),
+          callback: (map() -> {:ok, any()} | {:error, String.t()}) | nil
+        }
 
   import Plug.Conn
 
@@ -66,12 +74,13 @@ defmodule MCP.Connection do
   def handle_continue({:handle_initialize, id, params}, state) do
     with :ok <- validate_protocol_version(params["protocolVersion"]),
          {:ok, %{tools: tools, server_info: server_info}} <-
-           state.init_callback.(state.session_id, params) do
-      # Build dispatch table from tools with callbacks
-      {tool_schemas, dispatch_table} = build_dispatch_table(tools)
-
-      # Update state with dispatch table
-      state = Map.put(state, :dispatch_table, dispatch_table)
+           state.init_callback.(state.session_id, params),
+         {:ok, {tool_schemas, dispatch_table}} <- build_dispatch_table(tools) do
+      # Update state with dispatch table and tool schemas
+      state =
+        state
+        |> Map.put(:dispatch_table, dispatch_table)
+        |> Map.put(:tool_schemas, tool_schemas)
 
       %{
         protocolVersion: @protocol_version,
@@ -92,17 +101,16 @@ defmodule MCP.Connection do
   end
 
   def handle_continue({:handle_tools_list, id}, state) do
-    # Get tools from the initial callback result
-    case state.init_callback.(state.session_id, %{}) do
-      {:ok, %{tools: tools}} ->
-        {tool_schemas, _dispatch_table} = build_dispatch_table(tools)
+    # Use the tool schemas from the dispatch table built during initialization
+    case Map.get(state, :tool_schemas) do
+      nil ->
+        # If no tool schemas in state, server not properly initialized
+        handle_sse_error("Server not initialized", @error_codes.not_initialized, state, id)
 
+      tool_schemas ->
         %{tools: tool_schemas}
         |> format_sse_response(id)
         |> handle_sse_response(state)
-
-      {:error, reason} ->
-        handle_sse_error(reason, @error_codes.internal_error, state, id)
     end
   end
 
@@ -421,25 +429,135 @@ defmodule MCP.Connection do
     |> binary_part(0, length)
   end
 
-  defp build_dispatch_table(tools) do
-    Enum.reduce(tools, {[], %{}}, fn tool, {schemas, dispatch} ->
-      # Extract callback from tool if present
-      {callback, tool_schema} = Map.pop(tool, :callback)
+  @doc """
+  Validates a tool specification to ensure it conforms to the expected internal format.
 
-      # Add to schemas (without callback)
-      new_schemas = [tool_schema | schemas]
+  Returns `:ok` if valid, `{:error, reason}` if invalid.
+  """
+  @spec validate_tool_spec(map()) :: :ok | {:error, String.t()}
+  def validate_tool_spec(tool_spec) when is_map(tool_spec) do
+    with :ok <- validate_tool_name(tool_spec),
+         :ok <- validate_tool_description(tool_spec),
+         :ok <- validate_tool_input_schema(tool_spec),
+         :ok <- validate_tool_callback(tool_spec) do
+      :ok
+    end
+  end
 
-      # Add to dispatch table if callback exists
-      new_dispatch =
-        if callback do
-          Map.put(dispatch, tool_schema.name, callback)
-        else
-          dispatch
+  def validate_tool_spec(_), do: {:error, "Tool specification must be a map"}
+
+  defp validate_tool_name(%{name: name}) when is_binary(name) and name != "" do
+    :ok
+  end
+
+  defp validate_tool_name(%{name: _}), do: {:error, "Tool name must be a non-empty string"}
+  defp validate_tool_name(_), do: {:error, "Tool specification must include a 'name' field"}
+
+  defp validate_tool_description(%{description: desc}) when is_binary(desc) and desc != "" do
+    :ok
+  end
+
+  defp validate_tool_description(%{description: _}),
+    do: {:error, "Tool description must be a non-empty string"}
+
+  defp validate_tool_description(_),
+    do: {:error, "Tool specification must include a 'description' field"}
+
+  defp validate_tool_input_schema(%{input_schema: schema}) when is_map(schema) do
+    case validate_json_schema_structure(schema) do
+      :ok -> :ok
+      {:error, reason} -> {:error, "Invalid input_schema: #{reason}"}
+    end
+  end
+
+  defp validate_tool_input_schema(%{input_schema: _}),
+    do: {:error, "Tool input_schema must be a map"}
+
+  defp validate_tool_input_schema(_),
+    do: {:error, "Tool specification must include an 'input_schema' field"}
+
+  defp validate_tool_callback(%{callback: callback}) when is_function(callback, 1) do
+    :ok
+  end
+
+  defp validate_tool_callback(%{callback: nil}) do
+    :ok
+  end
+
+  defp validate_tool_callback(%{callback: _}),
+    do: {:error, "Tool callback must be a function/1 or nil"}
+
+  defp validate_tool_callback(_), do: :ok
+
+  defp validate_json_schema_structure(schema) when is_map(schema) do
+    # Basic JSON Schema validation - check for required type field if properties are present
+    case schema do
+      %{"properties" => props} when is_map(props) ->
+        case Map.get(schema, "type") do
+          "object" -> :ok
+          nil -> {:error, "schema with 'properties' must have type 'object'"}
+          _ -> {:error, "schema with 'properties' must have type 'object'"}
         end
 
-      {new_schemas, new_dispatch}
+      _ ->
+        :ok
+    end
+  end
+
+  defp validate_json_schema_structure(_), do: {:error, "schema must be a map"}
+
+  @doc """
+  Converts an internal tool specification to the MCP protocol format.
+
+  Removes the internal :callback field and converts atom keys to string keys.
+  """
+  @spec marshal_tool_spec(tool_spec()) :: map()
+  def marshal_tool_spec(tool_spec) do
+    tool_spec
+    |> Map.drop([:callback, "callback"])
+    |> Map.new(fn
+      {:name, v} -> {"name", v}
+      {:description, v} -> {"description", v}
+      {:input_schema, v} -> {"inputSchema", v}
+      {"input_schema", v} -> {"inputSchema", v}
+      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+      {k, v} -> {k, v}
     end)
-    |> then(fn {schemas, dispatch} -> {Enum.reverse(schemas), dispatch} end)
+  end
+
+  defp build_dispatch_table(tools) do
+    validate_and_build_tools(tools, {[], %{}})
+  end
+
+  defp validate_and_build_tools([], {schemas, dispatch}) do
+    {:ok, {Enum.reverse(schemas), dispatch}}
+  end
+
+  defp validate_and_build_tools([tool | rest], {schemas, dispatch}) do
+    case validate_tool_spec(tool) do
+      :ok ->
+        # Extract callback from tool
+        {callback, _} = Map.pop(tool, :callback)
+
+        # Marshal tool to MCP format (without callback)
+        tool_schema = marshal_tool_spec(tool)
+
+        # Add to schemas
+        new_schemas = [tool_schema | schemas]
+
+        # Add to dispatch table if callback exists
+        new_dispatch =
+          if callback do
+            Map.put(dispatch, tool.name, callback)
+          else
+            dispatch
+          end
+
+        validate_and_build_tools(rest, {new_schemas, new_dispatch})
+
+      {:error, reason} ->
+        {:error, "Invalid tool specification: #{reason}"}
+    end
   end
 
   # defp safe_call_tool(request_id, params, state_pid) do

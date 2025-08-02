@@ -103,7 +103,7 @@ defmodule MCP.IntegrationTest do
       %{
         name: "list_activities",
         description: "Returns all activities from categories",
-        inputSchema: %{
+        input_schema: %{
           type: "object",
           required: ["is_today"],
           properties: %{
@@ -149,7 +149,13 @@ defmodule MCP.IntegrationTest do
       version: "1.2.3"
     }
 
-    tools = [%{name: "get_activity", description: "Returns activity details"}]
+    tools = [
+      %{
+        name: "get_activity",
+        description: "Returns activity details",
+        input_schema: %{"type" => "object"}
+      }
+    ]
 
     # Use the new helper function to initialize session with custom config
     {session_req, sse_resp} = init_session_with_config(sse_req, tools, server_info)
@@ -177,7 +183,11 @@ defmodule MCP.IntegrationTest do
            }
 
     assert data["result"]["tools"] == [
-             %{"name" => "get_activity", "description" => "Returns activity details"}
+             %{
+               "name" => "get_activity",
+               "description" => "Returns activity details",
+               "inputSchema" => %{"type" => "object"}
+             }
            ]
   end
 
@@ -189,7 +199,7 @@ defmodule MCP.IntegrationTest do
       %{
         name: "echo_message",
         description: "Echoes back the provided message with a prefix",
-        inputSchema: %{
+        input_schema: %{
           type: "object",
           required: ["message"],
           properties: %{
@@ -222,7 +232,7 @@ defmodule MCP.IntegrationTest do
       %{
         name: "calculate_sum",
         description: "Calculates the sum of two numbers",
-        inputSchema: %{
+        input_schema: %{
           type: "object",
           required: ["a", "b"],
           properties: %{
@@ -387,10 +397,11 @@ defmodule MCP.IntegrationTest do
   test "initialize request with missing protocol version", %{sse_req: sse_req} do
     {session_req, sse_resp} = init_session_with_tools(sse_req, [])
 
-    response = send_rpc_request(session_req, "initialize", %{
-      clientInfo: %{name: "test-client", version: "1.0.0"},
-      capabilities: %{}
-    })
+    response =
+      send_rpc_request(session_req, "initialize", %{
+        clientInfo: %{name: "test-client", version: "1.0.0"},
+        capabilities: %{}
+      })
 
     assert response.status == 202
     expect_rpc_error(sse_resp, -32602)
@@ -399,11 +410,12 @@ defmodule MCP.IntegrationTest do
   test "initialize request with invalid protocol version", %{sse_req: sse_req} do
     {session_req, sse_resp} = init_session_with_tools(sse_req, [])
 
-    response = send_rpc_request(session_req, "initialize", %{
-      protocolVersion: "invalid-version",
-      clientInfo: %{name: "test-client", version: "1.0.0"},
-      capabilities: %{}
-    })
+    response =
+      send_rpc_request(session_req, "initialize", %{
+        protocolVersion: "invalid-version",
+        clientInfo: %{name: "test-client", version: "1.0.0"},
+        capabilities: %{}
+      })
 
     assert response.status == 202
     expect_rpc_error(sse_resp, -32602)
@@ -412,18 +424,19 @@ defmodule MCP.IntegrationTest do
   test "initialize request with client capabilities", %{sse_req: sse_req} do
     {session_req, sse_resp} = init_session_with_tools(sse_req, [])
 
-    response = send_rpc_request(session_req, "initialize", %{
-      protocolVersion: @protocol_version,
-      clientInfo: %{name: "advanced-client", version: "2.1.0"},
-      capabilities: %{
-        experimental: %{},
-        sampling: %{}
-      }
-    })
+    response =
+      send_rpc_request(session_req, "initialize", %{
+        protocolVersion: @protocol_version,
+        clientInfo: %{name: "advanced-client", version: "2.1.0"},
+        capabilities: %{
+          experimental: %{},
+          sampling: %{}
+        }
+      })
 
     assert response.status == 202
     data = expect_rpc_response(sse_resp)
-    
+
     assert data["result"]["protocolVersion"] == @protocol_version
     assert data["result"]["serverInfo"]["name"] == "test-server"
     assert data["result"]["capabilities"] != nil
@@ -439,20 +452,21 @@ defmodule MCP.IntegrationTest do
     # List tools
     response = send_tools_list_request(session_req)
     assert response.status == 202
-    
+
     data = expect_rpc_response(sse_resp)
     assert data["result"]["tools"] == []
     assert data["result"]["nextCursor"] == nil
   end
 
   test "tools/list with pagination (cursor)", %{sse_req: sse_req} do
-    tools = Enum.map(1..5, fn i ->
-      %{
-        name: "tool_#{i}",
-        description: "Tool number #{i}",
-        inputSchema: %{type: "object", properties: %{}}
-      }
-    end)
+    tools =
+      Enum.map(1..5, fn i ->
+        %{
+          name: "tool_#{i}",
+          description: "Tool number #{i}",
+          input_schema: %{type: "object", properties: %{}}
+        }
+      end)
 
     {session_req, sse_resp} = init_session_with_tools(sse_req, tools)
 
@@ -463,7 +477,7 @@ defmodule MCP.IntegrationTest do
     # List tools with cursor
     response = send_tools_list_request(session_req, "some-cursor")
     assert response.status == 202
-    
+
     data = expect_rpc_response(sse_resp)
     assert is_list(data["result"]["tools"])
     assert length(data["result"]["tools"]) == 5
@@ -479,7 +493,7 @@ defmodule MCP.IntegrationTest do
     # Call non-existent tool
     response = send_tools_call_request(session_req, "nonexistent_tool", %{})
     assert response.status == 202
-    
+
     expect_rpc_error(sse_resp, -32601)
   end
 
@@ -488,7 +502,7 @@ defmodule MCP.IntegrationTest do
       %{
         name: "require_args_tool",
         description: "Tool that requires arguments",
-        inputSchema: %{
+        input_schema: %{
           type: "object",
           required: ["required_arg"],
           properties: %{
@@ -510,7 +524,7 @@ defmodule MCP.IntegrationTest do
     # Call tool without required arguments
     response = send_tools_call_request(session_req, "require_args_tool", %{})
     assert response.status == 202
-    
+
     data = expect_rpc_response(sse_resp)
     # Should succeed even without validation (server implementation dependent)
     assert data["result"] != nil
@@ -521,12 +535,13 @@ defmodule MCP.IntegrationTest do
       %{
         name: "error_tool",
         description: "Tool that returns an error",
-        inputSchema: %{type: "object", properties: %{}},
+        input_schema: %{type: "object", properties: %{}},
         callback: fn _arguments ->
-          {:ok, %{
-            content: [%{type: "text", text: "Tool execution failed"}],
-            isError: true
-          }}
+          {:ok,
+           %{
+             content: [%{type: "text", text: "Tool execution failed"}],
+             isError: true
+           }}
         end
       }
     ]
@@ -540,7 +555,7 @@ defmodule MCP.IntegrationTest do
     # Call error tool
     response = send_tools_call_request(session_req, "error_tool", %{})
     assert response.status == 202
-    
+
     data = expect_rpc_response(sse_resp)
     assert data["result"]["content"] != nil
     assert data["result"]["isError"] == true
@@ -571,10 +586,10 @@ defmodule MCP.IntegrationTest do
         capabilities: %{}
       }
     }
-    
+
     response = Req.post!(session_req, json: json_payload)
     assert response.status == 200
-    
+
     # Should get invalid request error in response body
     assert response.body["error"]["code"] == -32600
   end
@@ -583,11 +598,18 @@ defmodule MCP.IntegrationTest do
     {session_req, sse_resp} = init_session_with_tools(sse_req, [])
 
     string_id = "test-request-id"
-    response = send_rpc_request(session_req, "initialize", %{
-      protocolVersion: @protocol_version,
-      clientInfo: %{name: "test-client", version: "1.0.0"},
-      capabilities: %{}
-    }, string_id)
+
+    response =
+      send_rpc_request(
+        session_req,
+        "initialize",
+        %{
+          protocolVersion: @protocol_version,
+          clientInfo: %{name: "test-client", version: "1.0.0"},
+          capabilities: %{}
+        },
+        string_id
+      )
 
     assert response.status == 202
     data = expect_rpc_response(sse_resp, string_id)
@@ -598,11 +620,18 @@ defmodule MCP.IntegrationTest do
     {session_req, sse_resp} = init_session_with_tools(sse_req, [])
 
     numeric_id = 12345
-    response = send_rpc_request(session_req, "initialize", %{
-      protocolVersion: @protocol_version,
-      clientInfo: %{name: "test-client", version: "1.0.0"},
-      capabilities: %{}
-    }, numeric_id)
+
+    response =
+      send_rpc_request(
+        session_req,
+        "initialize",
+        %{
+          protocolVersion: @protocol_version,
+          clientInfo: %{name: "test-client", version: "1.0.0"},
+          capabilities: %{}
+        },
+        numeric_id
+      )
 
     assert response.status == 202
     data = expect_rpc_response(sse_resp, numeric_id)
@@ -614,7 +643,7 @@ defmodule MCP.IntegrationTest do
 
     response = send_rpc_request(session_req, "unknown/method", %{})
     assert response.status == 202
-    
+
     expect_rpc_error(sse_resp, -32601)
   end
 
@@ -623,7 +652,7 @@ defmodule MCP.IntegrationTest do
       %{
         name: "test_tool",
         description: "Test tool",
-        inputSchema: %{type: "object", properties: %{}},
+        input_schema: %{type: "object", properties: %{}},
         callback: fn _arguments ->
           {:ok, %{content: [%{type: "text", text: "Tool result"}]}}
         end
@@ -635,7 +664,7 @@ defmodule MCP.IntegrationTest do
     # Try to call tool before initializing - dispatch_table hasn't been set up yet
     response = send_tools_call_request(session_req, "test_tool", %{})
     assert response.status == 202
-    
+
     # Should get tool not found error since dispatch_table is empty
     expect_rpc_error(sse_resp, -32601)
   end
@@ -645,7 +674,7 @@ defmodule MCP.IntegrationTest do
       %{
         name: "counter",
         description: "Returns incrementing numbers",
-        inputSchema: %{
+        input_schema: %{
           type: "object",
           properties: %{
             start: %{type: "number", default: 0}
@@ -668,7 +697,7 @@ defmodule MCP.IntegrationTest do
     for i <- 1..3 do
       response = send_tools_call_request(session_req, "counter", %{start: i})
       assert response.status == 202
-      
+
       data = expect_rpc_response(sse_resp)
       content = hd(data["result"]["content"])
       assert content["text"] == "Count: #{i + 1}"
@@ -680,7 +709,7 @@ defmodule MCP.IntegrationTest do
       %{
         name: "complex_tool",
         description: "Tool with complex input schema",
-        inputSchema: %{
+        input_schema: %{
           type: "object",
           required: ["name"],
           properties: %{
@@ -712,21 +741,22 @@ defmodule MCP.IntegrationTest do
     # List tools to verify schema
     response = send_tools_list_request(session_req)
     assert response.status == 202
-    
+
     data = expect_rpc_response(sse_resp)
     tool = hd(data["result"]["tools"])
     assert tool["inputSchema"]["required"] == ["name"]
     assert tool["inputSchema"]["properties"]["name"]["type"] == "string"
 
     # Call tool with valid arguments
-    response = send_tools_call_request(session_req, "complex_tool", %{
-      name: "Alice",
-      age: 30,
-      preferences: %{
-        color: "blue",
-        numbers: [1, 2, 3]
-      }
-    })
+    response =
+      send_tools_call_request(session_req, "complex_tool", %{
+        name: "Alice",
+        age: 30,
+        preferences: %{
+          color: "blue",
+          numbers: [1, 2, 3]
+        }
+      })
 
     assert response.status == 202
     data = expect_rpc_response(sse_resp)
@@ -765,68 +795,133 @@ defmodule MCP.IntegrationTest do
   # RPC Helper Functions
   defp send_rpc_request(session_req, method, params \\ %{}, request_id \\ nil) do
     id = request_id || id()
-    
+
     json_payload = %{
       jsonrpc: "2.0",
       id: id,
       method: method,
       params: params
     }
-    
+
     Req.post!(session_req, json: json_payload)
   end
-  
+
   defp send_rpc_notification(session_req, method, params \\ %{}) do
     json_payload = %{
       jsonrpc: "2.0",
       method: method,
       params: params
     }
-    
+
     Req.post!(session_req, json: json_payload)
   end
-  
+
   defp expect_rpc_response(sse_resp, expected_id \\ nil) do
     {:ok, %{event: "message", data: data}} = receive_response_event(sse_resp)
     response = JSON.decode!(data)
-    
+
     if expected_id do
       assert response["id"] == expected_id
     end
-    
+
     response
   end
-  
+
   defp expect_rpc_error(sse_resp, expected_code \\ nil, expected_id \\ nil) do
     response = expect_rpc_response(sse_resp, expected_id)
-    
+
     assert response["error"] != nil
-    
+
     if expected_code do
       assert response["error"]["code"] == expected_code
     end
-    
+
     response
   end
-  
-  defp send_initialize_request(session_req, client_info \\ %{name: "test-client", version: "1.0.0"}) do
+
+  defp send_initialize_request(
+         session_req,
+         client_info \\ %{name: "test-client", version: "1.0.0"}
+       ) do
     send_rpc_request(session_req, "initialize", %{
       protocolVersion: @protocol_version,
       clientInfo: client_info,
       capabilities: %{}
     })
   end
-  
+
   defp send_tools_list_request(session_req, cursor \\ nil) do
     params = if cursor, do: %{cursor: cursor}, else: %{}
     send_rpc_request(session_req, "tools/list", params)
   end
-  
+
   defp send_tools_call_request(session_req, tool_name, arguments \\ %{}) do
     send_rpc_request(session_req, "tools/call", %{
       name: tool_name,
       arguments: arguments
     })
+  end
+
+  # Integration test that verifies validation happens during tool registration
+  test "tool validation during initialization with invalid tool", %{sse_req: sse_req} do
+    # Define invalid tools (missing required fields)
+    invalid_tools = [
+      %{
+        # Missing name and description
+        input_schema: %{"type" => "object"}
+      }
+    ]
+
+    # Register the invalid tools
+    {session_req, sse_resp} = init_session_with_tools(sse_req, invalid_tools)
+
+    # Send initialize request - this should return an error response
+    response = send_initialize_request(session_req)
+    assert response.status == 202
+
+    # Expect an SSE error event about invalid tool specification
+    # invalid_params error code
+    error_data = expect_rpc_error(sse_resp, -32602)
+    assert error_data["error"]["message"] =~ "Invalid tool specification"
+    assert error_data["error"]["message"] =~ "name"
+  end
+
+  test "tool validation during initialization with valid tools", %{sse_req: sse_req} do
+    # Define valid tools
+    valid_tools = [
+      %{
+        name: "valid_tool",
+        description: "A valid tool",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "param" => %{"type" => "string"}
+          }
+        },
+        callback: fn _args -> {:ok, %{content: [%{type: "text", text: "success"}]}} end
+      }
+    ]
+
+    # This should work without errors
+    {session_req, sse_resp} = init_session_with_tools(sse_req, valid_tools)
+
+    # Initialize and verify the tool is properly marshaled
+    send_initialize_request(session_req)
+    data = expect_rpc_response(sse_resp)
+
+    # Verify the tool appears in MCP format
+    tools = data["result"]["tools"]
+    assert length(tools) == 1
+
+    tool = hd(tools)
+    assert tool["name"] == "valid_tool"
+    assert tool["description"] == "A valid tool"
+    assert tool["inputSchema"]["type"] == "object"
+    assert tool["inputSchema"]["properties"]["param"]["type"] == "string"
+
+    # Verify callback field is not present in the marshaled output
+    refute Map.has_key?(tool, "callback")
+    refute Map.has_key?(tool, :callback)
   end
 
   defp id(length \\ 5) do
