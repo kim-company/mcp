@@ -1,12 +1,12 @@
 defmodule MCP.Test.Dispatcher do
   @moduledoc """
   A GenServer that acts as a dispatcher for test init_callback functions.
-  
+
   Tests can register callback functions before calling init_session,
   and the dispatcher will look up and execute the appropriate callback
   when the MCP initialization happens.
   """
-  
+
   use GenServer
 
   ## Client API
@@ -44,16 +44,16 @@ defmodule MCP.Test.Dispatcher do
   @impl true
   def init(:ok) do
     # Simple callbacks map keyed by session_id
-    {:ok, %{callbacks: %{}}}  
+    {:ok, %{callbacks: %{}}}
   end
 
   @impl true
   def handle_call({:register, session_id, callback_fn}, _from, state) do
     new_state = %{
-      state |
-      callbacks: Map.put(state.callbacks, session_id, callback_fn)
+      state
+      | callbacks: Map.put(state.callbacks, session_id, callback_fn)
     }
-    
+
     {:reply, :ok, new_state}
   end
 
@@ -64,7 +64,7 @@ defmodule MCP.Test.Dispatcher do
         # Default callback if no specific one is registered
         default_result = {:ok, %{server_info: %{name: "test-server"}, tools: []}}
         {:reply, default_result, state}
-      
+
       callback_fn ->
         result = callback_fn.(session_id, init_params)
         {:reply, result, state}
@@ -74,10 +74,10 @@ defmodule MCP.Test.Dispatcher do
   @impl true
   def handle_call({:clear, session_id}, _from, state) do
     new_state = %{
-      state |
-      callbacks: Map.delete(state.callbacks, session_id)
+      state
+      | callbacks: Map.delete(state.callbacks, session_id)
     }
-    
+
     {:reply, :ok, new_state}
   end
 end

@@ -6,14 +6,18 @@ defmodule MCP.IntegrationTest do
   setup_all do
     # Start the dispatcher
     start_link_supervised!(MCP.Test.Dispatcher)
-    
+
     # Create init_callback that uses the dispatcher
     init_callback = fn session_id, init_params ->
       MCP.Test.Dispatcher.dispatch_callback(session_id, init_params)
     end
-    
+
     # Start the server once with the dispatcher-based callback
-    pid = start_link_supervised!({Bandit, [plug: {MCP.Router, [init_callback: init_callback]}, port: 0]})
+    pid =
+      start_link_supervised!(
+        {Bandit, [plug: {MCP.Router, [init_callback: init_callback]}, port: 0]}
+      )
+
     {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
     req = Req.new(retry: false, base_url: "http://localhost:#{port}")
     %{sse_req: req}
@@ -26,24 +30,25 @@ defmodule MCP.IntegrationTest do
   def init_session_with_config(req, tools, server_info) do
     # Start the session to get the session_id
     {session_req, sse_resp} = init_session(req)
-    
+
     # Extract session_id from the session_req URL
-    session_id = session_req.url
-    |> to_string()
-    |> URI.parse()
-    |> Map.get(:query)
-    |> URI.decode_query()
-    |> Map.get("sessionId")
-    
+    session_id =
+      session_req.url
+      |> to_string()
+      |> URI.parse()
+      |> Map.get(:query)
+      |> URI.decode_query()
+      |> Map.get("sessionId")
+
     # Register the callback with tools and server_info for this session_id
     callback_fn = fn _session_id, _init_params ->
       {:ok, %{server_info: server_info, tools: tools}}
     end
+
     MCP.Test.Dispatcher.register_callback(session_id, callback_fn)
-    
+
     {session_req, sse_resp}
   end
-
 
   test "405 on invalid request", %{sse_req: req} do
     resp = Req.post!(req, url: "/")
@@ -73,6 +78,7 @@ defmodule MCP.IntegrationTest do
 
   test "mcp initialization", %{sse_req: sse_req} do
     {session_req, sse_resp} = init_session(sse_req)
+
     resp =
       Req.post!(session_req,
         json: %{
@@ -113,7 +119,7 @@ defmodule MCP.IntegrationTest do
 
     # Use the new helper function to initialize session with tools
     {session_req, sse_resp} = init_session_with_tools(sse_req, tools)
-    
+
     resp =
       Req.post!(session_req,
         json: %{
@@ -129,7 +135,7 @@ defmodule MCP.IntegrationTest do
     assert resp.status == 202
     {:ok, %{event: "message", data: data}} = receive_response_event(sse_resp)
     data = JSON.decode!(data)
-    
+
     # Verify the tools are included in the response
     assert data["result"]["protocolVersion"] == @protocol_version
     assert length(data["result"]["tools"]) == 1
@@ -147,7 +153,7 @@ defmodule MCP.IntegrationTest do
 
     # Use the new helper function to initialize session with custom config
     {session_req, sse_resp} = init_session_with_config(sse_req, tools, server_info)
-    
+
     resp =
       Req.post!(session_req,
         json: %{
@@ -163,13 +169,21 @@ defmodule MCP.IntegrationTest do
     assert resp.status == 202
     {:ok, %{event: "message", data: data}} = receive_response_event(sse_resp)
     data = JSON.decode!(data)
-    
+
     # Verify the response contains our custom server info and tools
-    assert data["result"]["serverInfo"] == %{"name" => "custom-activity-server", "version" => "1.2.3"}
-    assert data["result"]["tools"] == [%{"name" => "get_activity", "description" => "Returns activity details"}]
+    assert data["result"]["serverInfo"] == %{
+             "name" => "custom-activity-server",
+             "version" => "1.2.3"
+           }
+
+    assert data["result"]["tools"] == [
+             %{"name" => "get_activity", "description" => "Returns activity details"}
+           ]
   end
 
-  test "complete tool calling flow: initialization, tools/list, and tools/call", %{sse_req: sse_req} do
+  test "complete tool calling flow: initialization, tools/list, and tools/call", %{
+    sse_req: sse_req
+  } do
     # Define test tools with detailed schemas and callbacks
     tools = [
       %{
@@ -193,15 +207,16 @@ defmodule MCP.IntegrationTest do
         callback: fn arguments ->
           message = arguments["message"] || ""
           prefix = arguments["prefix"] || "Echo:"
-          
-          {:ok, %{
-            content: [
-              %{
-                type: "text",
-                text: "#{prefix} #{message}"
-              }
-            ]
-          }}
+
+          {:ok,
+           %{
+             content: [
+               %{
+                 type: "text",
+                 text: "#{prefix} #{message}"
+               }
+             ]
+           }}
         end
       },
       %{
@@ -219,22 +234,23 @@ defmodule MCP.IntegrationTest do
           a = arguments["a"] || 0
           b = arguments["b"] || 0
           sum = a + b
-          
-          {:ok, %{
-            content: [
-              %{
-                type: "text", 
-                text: "The sum of #{a} and #{b} is #{sum}"
-              }
-            ]
-          }}
+
+          {:ok,
+           %{
+             content: [
+               %{
+                 type: "text",
+                 text: "The sum of #{a} and #{b} is #{sum}"
+               }
+             ]
+           }}
         end
       }
     ]
 
     # Initialize session with tools
     {session_req, sse_resp} = init_session_with_tools(sse_req, tools)
-    
+
     # Step 1: Initialize the MCP connection
     init_resp =
       Req.post!(session_req,
@@ -251,7 +267,7 @@ defmodule MCP.IntegrationTest do
     assert init_resp.status == 202
     {:ok, %{event: "message", data: init_data}} = receive_response_event(sse_resp)
     init_data = JSON.decode!(init_data)
-    
+
     # Verify initialization response contains tools
     assert init_data["result"]["protocolVersion"] == @protocol_version
     assert length(init_data["result"]["tools"]) == 2
@@ -273,13 +289,13 @@ defmodule MCP.IntegrationTest do
     assert list_resp.status == 202
     {:ok, %{event: "message", data: list_data}} = receive_response_event(sse_resp)
     list_data = JSON.decode!(list_data)
-    
+
     # Verify tools/list response
     assert is_list(list_data["result"]["tools"])
     assert length(list_data["result"]["tools"]) == 2
-    
+
     # Find the echo_message tool and verify its schema
-    echo_tool = Enum.find(list_data["result"]["tools"], & &1["name"] == "echo_message")
+    echo_tool = Enum.find(list_data["result"]["tools"], &(&1["name"] == "echo_message"))
     assert echo_tool["description"] == "Echoes back the provided message with a prefix"
     assert echo_tool["inputSchema"]["type"] == "object"
     assert echo_tool["inputSchema"]["required"] == ["message"]
@@ -304,16 +320,16 @@ defmodule MCP.IntegrationTest do
     assert call_resp.status == 202
     {:ok, %{event: "message", data: call_data}} = receive_response_event(sse_resp)
     call_data = JSON.decode!(call_data)
-    
+
     # Verify tools/call response
     assert call_data["result"]["content"] != nil
     assert is_list(call_data["result"]["content"])
     assert length(call_data["result"]["content"]) == 1
-    
+
     content = hd(call_data["result"]["content"])
     assert content["type"] == "text"
     assert content["text"] == "Test: Hello, MCP!"
-    
+
     # Step 4: Call the calculate_sum tool
     calc_resp =
       Req.post!(session_req,
@@ -334,16 +350,16 @@ defmodule MCP.IntegrationTest do
     assert calc_resp.status == 202
     {:ok, %{event: "message", data: calc_data}} = receive_response_event(sse_resp)
     calc_data = JSON.decode!(calc_data)
-    
+
     # Verify tools/call response for calculation
     assert calc_data["result"]["content"] != nil
     assert is_list(calc_data["result"]["content"])
     assert length(calc_data["result"]["content"]) == 1
-    
+
     calc_content = hd(calc_data["result"]["content"])
     assert calc_content["type"] == "text"
     assert calc_content["text"] == "The sum of 10 and 5 is 15"
-    
+
     # Step 5: Test tool not found error
     error_resp =
       Req.post!(session_req,
@@ -361,7 +377,7 @@ defmodule MCP.IntegrationTest do
     assert error_resp.status == 202
     {:ok, %{event: "message", data: error_data}} = receive_response_event(sse_resp)
     error_data = JSON.decode!(error_data)
-    
+
     # Verify error response
     assert error_data["error"] != nil
     assert error_data["error"]["code"] == -32601

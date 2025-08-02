@@ -9,7 +9,9 @@ defmodule MCP.Application do
   def start(_type, _args) do
     children = [
       # Registry for MCP sessions
-      {Registry, keys: :unique, name: MCP.Registry}
+      {Registry, keys: :unique, name: MCP.Registry},
+      # Task supervisor for async tool calls
+      {Task.Supervisor, name: MCP.ToolCallSupervisor}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

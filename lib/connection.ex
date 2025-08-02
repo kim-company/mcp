@@ -5,6 +5,8 @@ defmodule MCP.Connection do
   use GenServer
   require Logger
 
+  @type init_callback_result :: {:ok, %{tools: list(), server_info: map()}} | {:error, String.t()}
+
   import Plug.Conn
 
   # 30 seconds for initialization
@@ -41,7 +43,9 @@ defmodule MCP.Connection do
       # Add reference to the timeout timer
       timeout_ref: timeout_ref,
       requests: %{},
-      init_callback: opts[:init_callback]
+      init_callback: opts[:init_callback],
+      # Track pending async tool tasks: %{task_ref => request_id}
+      pending_tasks: %{}
     })
   end
 
@@ -56,14 +60,14 @@ defmodule MCP.Connection do
   @impl GenServer
   def handle_continue({:handle_initialize, id, params}, state) do
     with :ok <- validate_protocol_version(params["protocolVersion"]),
-         {:ok, %{tools: tools, server_info: server_info}} <- state.init_callback.(state.session_id, params) do
-      
+         {:ok, %{tools: tools, server_info: server_info}} <-
+           state.init_callback.(state.session_id, params) do
       # Build dispatch table from tools with callbacks
       {tool_schemas, dispatch_table} = build_dispatch_table(tools)
-      
+
       # Update state with dispatch table
       state = Map.put(state, :dispatch_table, dispatch_table)
-      
+
       %{
         protocolVersion: @protocol_version,
         capabilities: %{
@@ -87,11 +91,11 @@ defmodule MCP.Connection do
     case state.init_callback.(state.session_id, %{}) do
       {:ok, %{tools: tools}} ->
         {tool_schemas, _dispatch_table} = build_dispatch_table(tools)
-        
+
         %{tools: tool_schemas}
         |> format_sse_response(id)
         |> handle_sse_response(state)
-        
+
       {:error, reason} ->
         handle_sse_error(reason, @error_codes.invalid_protocol, state, id)
     end
@@ -100,83 +104,27 @@ defmodule MCP.Connection do
   def handle_continue({:handle_tools_call, id, params}, state) do
     tool_name = params["name"]
     arguments = params["arguments"] || %{}
-    
+
     case Map.get(state.dispatch_table, tool_name) do
       nil ->
         handle_sse_error("Tool not found: #{tool_name}", -32601, state, id)
-        
+
       callback ->
-        try do
-          case callback.(arguments) do
-            {:ok, result} ->
-              result
-              |> format_sse_response(id)
-              |> handle_sse_response(state)
-              
-            {:error, reason} ->
-              # Tool errors should be returned as successful responses with isError: true
-              # per MCP specification
-              result = %{
-                content: [
-                  %{
-                    type: "text",
-                    text: reason
-                  }
-                ],
-                isError: true
-              }
-              
-              result
-              |> format_sse_response(id)
-              |> handle_sse_response(state)
-          end
-        rescue
-          error ->
-            # Handle exceptions as tool errors
-            result = %{
-              content: [
-                %{
-                  type: "text",
-                  text: "Tool execution failed: #{Exception.message(error)}"
-                }
-              ],
-              isError: true
-            }
-            
-            result
-            |> format_sse_response(id)
-            |> handle_sse_response(state)
-        end
+        # Start async task for tool execution
+        task =
+          Task.Supervisor.async_nolink(MCP.ToolCallSupervisor, fn ->
+            callback.(arguments)
+          end)
+
+        # Track the task reference with its request ID
+        new_pending_tasks = Map.put(state.pending_tasks, task.ref, id)
+        {:noreply, %{state | pending_tasks: new_pending_tasks}}
     end
   end
 
   @impl GenServer
   def handle_call(:ready?, _from, state) do
     {:reply, state.state == :ready, state}
-  end
-
-  @impl GenServer
-  def handle_call({:dispatch, callback, args}, _from, state) do
-    # tools that change the state are dispatched inside the Connection server
-    # in order to synchronize state changes
-    try do
-      case callback.(args, state.assigns) do
-        {:ok, result, new_assigns} ->
-          {:reply, {:ok, result}, %{state | assigns: new_assigns}}
-
-        {:ok, result, new_assigns, metadata} ->
-          {:reply, {:ok, result, metadata}, %{state | assigns: new_assigns}}
-
-        {:error, reason, new_assigns} ->
-          {:reply, {:error, reason}, %{state | assigns: new_assigns}}
-
-        other ->
-          {:reply, other, state}
-      end
-    catch
-      kind, reason ->
-        {:error, "Failed to call tool: #{Exception.format(kind, reason, __STACKTRACE__)}"}
-    end
   end
 
   @impl GenServer
@@ -290,7 +238,58 @@ defmodule MCP.Connection do
     {:noreply, state}
   end
 
+  # Handle successful task completion
+  def handle_info({ref, result}, state) when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    handle_task_completion(ref, result, state)
+  end
+
+  # Handle task failure
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) when is_reference(ref) do
+    error_reason = "Tool execution failed: #{inspect(reason)}"
+    handle_task_completion(ref, {:error, error_reason}, state)
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
+
+  # Helper function to handle task completion by reference
+  defp handle_task_completion(ref, result, %{pending_tasks: pending_tasks} = state) do
+    case Map.pop(pending_tasks, ref) do
+      {nil, _} ->
+        # Task reference not found, ignore
+        {:noreply, state}
+
+      {request_id, remaining_tasks} ->
+        handle_task_result(result, request_id, %{state | pending_tasks: remaining_tasks})
+    end
+  end
+
+  # Helper function to handle task results
+  defp handle_task_result(result, request_id, state) do
+    case result do
+      {:ok, tool_result} ->
+        tool_result
+        |> format_sse_response(request_id)
+        |> handle_sse_response(state)
+
+      {:error, reason} ->
+        # Tool errors should be returned as successful responses with isError: true
+        # per MCP specification
+        error_result = %{
+          content: [
+            %{
+              type: "text",
+              text: reason
+            }
+          ],
+          isError: true
+        }
+
+        error_result
+        |> format_sse_response(request_id)
+        |> handle_sse_response(state)
+    end
+  end
 
   defp schedule_next_ping(%{sse_keepalive_timeout: timeout}) do
     Process.send_after(self(), :send_ping, timeout)
@@ -385,17 +384,18 @@ defmodule MCP.Connection do
     Enum.reduce(tools, {[], %{}}, fn tool, {schemas, dispatch} ->
       # Extract callback from tool if present
       {callback, tool_schema} = Map.pop(tool, :callback)
-      
+
       # Add to schemas (without callback)
       new_schemas = [tool_schema | schemas]
-      
+
       # Add to dispatch table if callback exists
-      new_dispatch = if callback do
-        Map.put(dispatch, tool_schema.name, callback)
-      else
-        dispatch
-      end
-      
+      new_dispatch =
+        if callback do
+          Map.put(dispatch, tool_schema.name, callback)
+        else
+          dispatch
+        end
+
       {new_schemas, new_dispatch}
     end)
     |> then(fn {schemas, dispatch} -> {Enum.reverse(schemas), dispatch} end)

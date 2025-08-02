@@ -68,6 +68,7 @@ defmodule MCP.SSE do
         message: message
       }
     }
+
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(200, JSON.encode!(error_response))
