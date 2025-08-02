@@ -184,7 +184,7 @@ end
 ### 3. Start Your Server
 
 ```bash
-mix run --no-halt
+iex -S mix
 ```
 
 Your MCP server will be available at `http://localhost:4000`.
