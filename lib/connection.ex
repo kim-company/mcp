@@ -57,6 +57,13 @@ defmodule MCP.Connection do
   def handle_continue({:handle_initialize, id, params}, state) do
     with :ok <- validate_protocol_version(params["protocolVersion"]),
          {:ok, %{tools: tools, server_info: server_info}} <- state.init_callback.(state.session_id, params) do
+      
+      # Build dispatch table from tools with callbacks
+      {tool_schemas, dispatch_table} = build_dispatch_table(tools)
+      
+      # Update state with dispatch table
+      state = Map.put(state, :dispatch_table, dispatch_table)
+      
       %{
         protocolVersion: @protocol_version,
         capabilities: %{
@@ -65,7 +72,7 @@ defmodule MCP.Connection do
           }
         },
         serverInfo: server_info,
-        tools: tools
+        tools: tool_schemas
       }
       |> format_sse_response(id)
       |> handle_sse_response(state)
@@ -76,13 +83,71 @@ defmodule MCP.Connection do
   end
 
   def handle_continue({:handle_tools_list, id}, state) do
-    dbg()
-    {:noreply, state}
+    # Get tools from the initial callback result
+    case state.init_callback.(state.session_id, %{}) do
+      {:ok, %{tools: tools}} ->
+        {tool_schemas, _dispatch_table} = build_dispatch_table(tools)
+        
+        %{tools: tool_schemas}
+        |> format_sse_response(id)
+        |> handle_sse_response(state)
+        
+      {:error, reason} ->
+        handle_sse_error(reason, @error_codes.invalid_protocol, state, id)
+    end
   end
 
   def handle_continue({:handle_tools_call, id, params}, state) do
-    dbg()
-    {:noreply, state}
+    tool_name = params["name"]
+    arguments = params["arguments"] || %{}
+    
+    case Map.get(state.dispatch_table, tool_name) do
+      nil ->
+        handle_sse_error("Tool not found: #{tool_name}", -32601, state, id)
+        
+      callback ->
+        try do
+          case callback.(arguments) do
+            {:ok, result} ->
+              result
+              |> format_sse_response(id)
+              |> handle_sse_response(state)
+              
+            {:error, reason} ->
+              # Tool errors should be returned as successful responses with isError: true
+              # per MCP specification
+              result = %{
+                content: [
+                  %{
+                    type: "text",
+                    text: reason
+                  }
+                ],
+                isError: true
+              }
+              
+              result
+              |> format_sse_response(id)
+              |> handle_sse_response(state)
+          end
+        rescue
+          error ->
+            # Handle exceptions as tool errors
+            result = %{
+              content: [
+                %{
+                  type: "text",
+                  text: "Tool execution failed: #{Exception.message(error)}"
+                }
+              ],
+              isError: true
+            }
+            
+            result
+            |> format_sse_response(id)
+            |> handle_sse_response(state)
+        end
+    end
   end
 
   @impl GenServer
@@ -314,6 +379,26 @@ defmodule MCP.Connection do
     :crypto.strong_rand_bytes(length)
     |> Base.url_encode64(padding: false)
     |> binary_part(0, length)
+  end
+
+  defp build_dispatch_table(tools) do
+    Enum.reduce(tools, {[], %{}}, fn tool, {schemas, dispatch} ->
+      # Extract callback from tool if present
+      {callback, tool_schema} = Map.pop(tool, :callback)
+      
+      # Add to schemas (without callback)
+      new_schemas = [tool_schema | schemas]
+      
+      # Add to dispatch table if callback exists
+      new_dispatch = if callback do
+        Map.put(dispatch, tool_schema.name, callback)
+      else
+        dispatch
+      end
+      
+      {new_schemas, new_dispatch}
+    end)
+    |> then(fn {schemas, dispatch} -> {Enum.reverse(schemas), dispatch} end)
   end
 
   # defp safe_call_tool(request_id, params, state_pid) do
