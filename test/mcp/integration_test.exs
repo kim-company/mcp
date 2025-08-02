@@ -384,6 +384,356 @@ defmodule MCP.IntegrationTest do
     assert String.contains?(error_data["error"]["message"], "Tool not found: nonexistent_tool")
   end
 
+  test "initialize request with missing protocol version", %{sse_req: sse_req} do
+    {session_req, sse_resp} = init_session_with_tools(sse_req, [])
+
+    response = send_rpc_request(session_req, "initialize", %{
+      clientInfo: %{name: "test-client", version: "1.0.0"},
+      capabilities: %{}
+    })
+
+    assert response.status == 202
+    expect_rpc_error(sse_resp, -32602)
+  end
+
+  test "initialize request with invalid protocol version", %{sse_req: sse_req} do
+    {session_req, sse_resp} = init_session_with_tools(sse_req, [])
+
+    response = send_rpc_request(session_req, "initialize", %{
+      protocolVersion: "invalid-version",
+      clientInfo: %{name: "test-client", version: "1.0.0"},
+      capabilities: %{}
+    })
+
+    assert response.status == 202
+    expect_rpc_error(sse_resp, -32602)
+  end
+
+  test "initialize request with client capabilities", %{sse_req: sse_req} do
+    {session_req, sse_resp} = init_session_with_tools(sse_req, [])
+
+    response = send_rpc_request(session_req, "initialize", %{
+      protocolVersion: @protocol_version,
+      clientInfo: %{name: "advanced-client", version: "2.1.0"},
+      capabilities: %{
+        experimental: %{},
+        sampling: %{}
+      }
+    })
+
+    assert response.status == 202
+    data = expect_rpc_response(sse_resp)
+    
+    assert data["result"]["protocolVersion"] == @protocol_version
+    assert data["result"]["serverInfo"]["name"] == "test-server"
+    assert data["result"]["capabilities"] != nil
+  end
+
+  test "tools/list with no tools available", %{sse_req: sse_req} do
+    {session_req, sse_resp} = init_session_with_tools(sse_req, [])
+
+    # Initialize first
+    send_initialize_request(session_req)
+    expect_rpc_response(sse_resp)
+
+    # List tools
+    response = send_tools_list_request(session_req)
+    assert response.status == 202
+    
+    data = expect_rpc_response(sse_resp)
+    assert data["result"]["tools"] == []
+    assert data["result"]["nextCursor"] == nil
+  end
+
+  test "tools/list with pagination (cursor)", %{sse_req: sse_req} do
+    tools = Enum.map(1..5, fn i ->
+      %{
+        name: "tool_#{i}",
+        description: "Tool number #{i}",
+        inputSchema: %{type: "object", properties: %{}}
+      }
+    end)
+
+    {session_req, sse_resp} = init_session_with_tools(sse_req, tools)
+
+    # Initialize first
+    send_initialize_request(session_req)
+    expect_rpc_response(sse_resp)
+
+    # List tools with cursor
+    response = send_tools_list_request(session_req, "some-cursor")
+    assert response.status == 202
+    
+    data = expect_rpc_response(sse_resp)
+    assert is_list(data["result"]["tools"])
+    assert length(data["result"]["tools"]) == 5
+  end
+
+  test "tools/call with invalid tool name", %{sse_req: sse_req} do
+    {session_req, sse_resp} = init_session_with_tools(sse_req, [])
+
+    # Initialize first
+    send_initialize_request(session_req)
+    expect_rpc_response(sse_resp)
+
+    # Call non-existent tool
+    response = send_tools_call_request(session_req, "nonexistent_tool", %{})
+    assert response.status == 202
+    
+    expect_rpc_error(sse_resp, -32601)
+  end
+
+  test "tools/call with missing required arguments", %{sse_req: sse_req} do
+    tools = [
+      %{
+        name: "require_args_tool",
+        description: "Tool that requires arguments",
+        inputSchema: %{
+          type: "object",
+          required: ["required_arg"],
+          properties: %{
+            required_arg: %{type: "string", description: "Required argument"}
+          }
+        },
+        callback: fn _arguments ->
+          {:ok, %{content: [%{type: "text", text: "Success"}]}}
+        end
+      }
+    ]
+
+    {session_req, sse_resp} = init_session_with_tools(sse_req, tools)
+
+    # Initialize first
+    send_initialize_request(session_req)
+    expect_rpc_response(sse_resp)
+
+    # Call tool without required arguments
+    response = send_tools_call_request(session_req, "require_args_tool", %{})
+    assert response.status == 202
+    
+    data = expect_rpc_response(sse_resp)
+    # Should succeed even without validation (server implementation dependent)
+    assert data["result"] != nil
+  end
+
+  test "tools/call with tool returning error", %{sse_req: sse_req} do
+    tools = [
+      %{
+        name: "error_tool",
+        description: "Tool that returns an error",
+        inputSchema: %{type: "object", properties: %{}},
+        callback: fn _arguments ->
+          {:ok, %{
+            content: [%{type: "text", text: "Tool execution failed"}],
+            isError: true
+          }}
+        end
+      }
+    ]
+
+    {session_req, sse_resp} = init_session_with_tools(sse_req, tools)
+
+    # Initialize first
+    send_initialize_request(session_req)
+    expect_rpc_response(sse_resp)
+
+    # Call error tool
+    response = send_tools_call_request(session_req, "error_tool", %{})
+    assert response.status == 202
+    
+    data = expect_rpc_response(sse_resp)
+    assert data["result"]["content"] != nil
+    assert data["result"]["isError"] == true
+  end
+
+  test "JSON-RPC 2.0 compliance - request without id (notification)", %{sse_req: sse_req} do
+    {session_req, _sse_resp} = init_session_with_tools(sse_req, [])
+
+    # Send notification (no id field)
+    response = send_rpc_notification(session_req, "notifications/initialized", %{})
+    assert response.status == 202
+
+    # Notifications should not generate responses
+    # We can't easily test this without timing, so we'll just ensure no error
+  end
+
+  test "JSON-RPC 2.0 compliance - request with null id", %{sse_req: sse_req} do
+    {session_req, _sse_resp} = init_session(sse_req)
+
+    # Manually create the request with null ID
+    json_payload = %{
+      jsonrpc: "2.0",
+      id: nil,
+      method: "initialize",
+      params: %{
+        protocolVersion: @protocol_version,
+        clientInfo: %{name: "test-client", version: "1.0.0"},
+        capabilities: %{}
+      }
+    }
+    
+    response = Req.post!(session_req, json: json_payload)
+    assert response.status == 200
+    
+    # Should get invalid request error in response body
+    assert response.body["error"]["code"] == -32600
+  end
+
+  test "JSON-RPC 2.0 compliance - request with string id", %{sse_req: sse_req} do
+    {session_req, sse_resp} = init_session_with_tools(sse_req, [])
+
+    string_id = "test-request-id"
+    response = send_rpc_request(session_req, "initialize", %{
+      protocolVersion: @protocol_version,
+      clientInfo: %{name: "test-client", version: "1.0.0"},
+      capabilities: %{}
+    }, string_id)
+
+    assert response.status == 202
+    data = expect_rpc_response(sse_resp, string_id)
+    assert data["id"] == string_id
+  end
+
+  test "JSON-RPC 2.0 compliance - request with numeric id", %{sse_req: sse_req} do
+    {session_req, sse_resp} = init_session_with_tools(sse_req, [])
+
+    numeric_id = 12345
+    response = send_rpc_request(session_req, "initialize", %{
+      protocolVersion: @protocol_version,
+      clientInfo: %{name: "test-client", version: "1.0.0"},
+      capabilities: %{}
+    }, numeric_id)
+
+    assert response.status == 202
+    data = expect_rpc_response(sse_resp, numeric_id)
+    assert data["id"] == numeric_id
+  end
+
+  test "method not found error", %{sse_req: sse_req} do
+    {session_req, sse_resp} = init_session(sse_req)
+
+    response = send_rpc_request(session_req, "unknown/method", %{})
+    assert response.status == 202
+    
+    expect_rpc_error(sse_resp, -32601)
+  end
+
+  test "initialize before calling tools", %{sse_req: sse_req} do
+    tools = [
+      %{
+        name: "test_tool",
+        description: "Test tool",
+        inputSchema: %{type: "object", properties: %{}},
+        callback: fn _arguments ->
+          {:ok, %{content: [%{type: "text", text: "Tool result"}]}}
+        end
+      }
+    ]
+
+    {session_req, sse_resp} = init_session_with_tools(sse_req, tools)
+
+    # Try to call tool before initializing - dispatch_table hasn't been set up yet
+    response = send_tools_call_request(session_req, "test_tool", %{})
+    assert response.status == 202
+    
+    # Should get tool not found error since dispatch_table is empty
+    expect_rpc_error(sse_resp, -32601)
+  end
+
+  test "multiple tool calls in sequence", %{sse_req: sse_req} do
+    tools = [
+      %{
+        name: "counter",
+        description: "Returns incrementing numbers",
+        inputSchema: %{
+          type: "object",
+          properties: %{
+            start: %{type: "number", default: 0}
+          }
+        },
+        callback: fn arguments ->
+          start = arguments["start"] || 0
+          {:ok, %{content: [%{type: "text", text: "Count: #{start + 1}"}]}}
+        end
+      }
+    ]
+
+    {session_req, sse_resp} = init_session_with_tools(sse_req, tools)
+
+    # Initialize first
+    send_initialize_request(session_req)
+    expect_rpc_response(sse_resp)
+
+    # Call tool multiple times
+    for i <- 1..3 do
+      response = send_tools_call_request(session_req, "counter", %{start: i})
+      assert response.status == 202
+      
+      data = expect_rpc_response(sse_resp)
+      content = hd(data["result"]["content"])
+      assert content["text"] == "Count: #{i + 1}"
+    end
+  end
+
+  test "tools with complex input schemas", %{sse_req: sse_req} do
+    tools = [
+      %{
+        name: "complex_tool",
+        description: "Tool with complex input schema",
+        inputSchema: %{
+          type: "object",
+          required: ["name"],
+          properties: %{
+            name: %{type: "string", minLength: 1},
+            age: %{type: "integer", minimum: 0, maximum: 150},
+            preferences: %{
+              type: "object",
+              properties: %{
+                color: %{type: "string", enum: ["red", "green", "blue"]},
+                numbers: %{type: "array", items: %{type: "number"}}
+              }
+            }
+          }
+        },
+        callback: fn arguments ->
+          name = arguments["name"]
+          age = arguments["age"] || "unknown"
+          {:ok, %{content: [%{type: "text", text: "Hello #{name}, age: #{age}"}]}}
+        end
+      }
+    ]
+
+    {session_req, sse_resp} = init_session_with_tools(sse_req, tools)
+
+    # Initialize first
+    send_initialize_request(session_req)
+    expect_rpc_response(sse_resp)
+
+    # List tools to verify schema
+    response = send_tools_list_request(session_req)
+    assert response.status == 202
+    
+    data = expect_rpc_response(sse_resp)
+    tool = hd(data["result"]["tools"])
+    assert tool["inputSchema"]["required"] == ["name"]
+    assert tool["inputSchema"]["properties"]["name"]["type"] == "string"
+
+    # Call tool with valid arguments
+    response = send_tools_call_request(session_req, "complex_tool", %{
+      name: "Alice",
+      age: 30,
+      preferences: %{
+        color: "blue",
+        numbers: [1, 2, 3]
+      }
+    })
+
+    assert response.status == 202
+    data = expect_rpc_response(sse_resp)
+    content = hd(data["result"]["content"])
+    assert content["text"] == "Hello Alice, age: 30"
+  end
+
   defp init_session(req) do
     resp = Req.get!(req, url: "/", into: :self)
     {:ok, %{event: "endpoint", data: uri}} = receive_response_event(resp)
@@ -410,6 +760,73 @@ defmodule MCP.IntegrationTest do
       other ->
         other
     end
+  end
+
+  # RPC Helper Functions
+  defp send_rpc_request(session_req, method, params \\ %{}, request_id \\ nil) do
+    id = request_id || id()
+    
+    json_payload = %{
+      jsonrpc: "2.0",
+      id: id,
+      method: method,
+      params: params
+    }
+    
+    Req.post!(session_req, json: json_payload)
+  end
+  
+  defp send_rpc_notification(session_req, method, params \\ %{}) do
+    json_payload = %{
+      jsonrpc: "2.0",
+      method: method,
+      params: params
+    }
+    
+    Req.post!(session_req, json: json_payload)
+  end
+  
+  defp expect_rpc_response(sse_resp, expected_id \\ nil) do
+    {:ok, %{event: "message", data: data}} = receive_response_event(sse_resp)
+    response = JSON.decode!(data)
+    
+    if expected_id do
+      assert response["id"] == expected_id
+    end
+    
+    response
+  end
+  
+  defp expect_rpc_error(sse_resp, expected_code \\ nil, expected_id \\ nil) do
+    response = expect_rpc_response(sse_resp, expected_id)
+    
+    assert response["error"] != nil
+    
+    if expected_code do
+      assert response["error"]["code"] == expected_code
+    end
+    
+    response
+  end
+  
+  defp send_initialize_request(session_req, client_info \\ %{name: "test-client", version: "1.0.0"}) do
+    send_rpc_request(session_req, "initialize", %{
+      protocolVersion: @protocol_version,
+      clientInfo: client_info,
+      capabilities: %{}
+    })
+  end
+  
+  defp send_tools_list_request(session_req, cursor \\ nil) do
+    params = if cursor, do: %{cursor: cursor}, else: %{}
+    send_rpc_request(session_req, "tools/list", params)
+  end
+  
+  defp send_tools_call_request(session_req, tool_name, arguments \\ %{}) do
+    send_rpc_request(session_req, "tools/call", %{
+      name: tool_name,
+      arguments: arguments
+    })
   end
 
   defp id(length \\ 5) do

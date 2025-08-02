@@ -19,9 +19,14 @@ defmodule MCP.Connection do
   @vsn Mix.Project.config()[:version]
 
   @error_codes %{
-    not_initialized: -32601,
-    invalid_protocol: -32602,
-    request_not_found: -32603
+    parse_error: -32700,
+    invalid_request: -32600,
+    method_not_found: -32601,
+    invalid_params: -32602,
+    internal_error: -32603,
+    not_initialized: -32001,
+    invalid_protocol: -32002,
+    request_not_found: -32003
   }
 
   @impl GenServer
@@ -82,7 +87,7 @@ defmodule MCP.Connection do
       |> handle_sse_response(state)
     else
       {:error, reason} ->
-        handle_sse_error(reason, @error_codes.invalid_protocol, state, id)
+        handle_sse_error(reason, @error_codes.invalid_params, state, id)
     end
   end
 
@@ -97,7 +102,7 @@ defmodule MCP.Connection do
         |> handle_sse_response(state)
 
       {:error, reason} ->
-        handle_sse_error(reason, @error_codes.invalid_protocol, state, id)
+        handle_sse_error(reason, @error_codes.internal_error, state, id)
     end
   end
 
@@ -105,9 +110,11 @@ defmodule MCP.Connection do
     tool_name = params["name"]
     arguments = params["arguments"] || %{}
 
-    case Map.get(state.dispatch_table, tool_name) do
+    dispatch_table = Map.get(state, :dispatch_table, %{})
+
+    case Map.get(dispatch_table, tool_name) do
       nil ->
-        handle_sse_error("Tool not found: #{tool_name}", -32601, state, id)
+        handle_sse_error("Tool not found: #{tool_name}", @error_codes.method_not_found, state, id)
 
       callback ->
         # Start async task for tool execution
@@ -207,6 +214,28 @@ defmodule MCP.Connection do
     else
       handle_sse_error("Request not found", @error_codes.request_not_found, state, id)
     end
+  end
+
+  # Handle unknown methods - must come after all specific method handlers
+  def handle_cast(
+        {:handle_message, %{"method" => _method, "id" => id} = _msg},
+        state
+      ) do
+    handle_sse_error("Method not found", @error_codes.method_not_found, state, id)
+  end
+
+  # Handle unknown methods without ID (notifications)
+  def handle_cast(
+        {:handle_message, %{"method" => _method} = _msg},
+        state
+      ) do
+    # Notifications don't get responses, just ignore unknown ones
+    {:noreply, record_activity(state)}
+  end
+
+  # Handle invalid JSON-RPC messages (missing method, malformed, etc.)
+  def handle_cast({:handle_message, _msg}, state) do
+    handle_sse_error("Could not parse message", @error_codes.invalid_request, state)
   end
 
   @impl GenServer
@@ -311,6 +340,9 @@ defmodule MCP.Connection do
       is_nil(client_version) ->
         {:error, "Protocol version is required"}
 
+      not valid_version_format?(client_version) ->
+        {:error, "Invalid protocol version format. Expected YYYY-MM-DD format"}
+
       client_version < unquote(@protocol_version) ->
         {:error,
          "Unsupported protocol version. Server supports #{unquote(@protocol_version)} or later"}
@@ -319,6 +351,15 @@ defmodule MCP.Connection do
         :ok
     end
   end
+
+  defp valid_version_format?(version) when is_binary(version) do
+    case Regex.match?(~r/^\d{4}-\d{2}-\d{2}$/, version) do
+      true -> true
+      false -> false
+    end
+  end
+
+  defp valid_version_format?(_), do: false
 
   defp handle_ping(state) do
     id = generate_id()
