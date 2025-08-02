@@ -9,11 +9,10 @@ defmodule MCP.Supervisor do
   end
 
   @impl true
-  def init(opts) do
+  def init(_opts) do
     children = [
       # For registering client sessions.
-      {Registry, name: MCP.Registry, keys: :unique},
-      {MCP.Server, tools: opts[:load_tools].()}
+      {Registry, name: MCP.Registry, keys: :unique}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

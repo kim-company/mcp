@@ -5,7 +5,6 @@ defmodule MCP.SSE do
 
   import Plug.Conn
   alias MCP.Connection
-  alias MCP.Server
 
   def handle_sse(conn, opts) do
     session_id = generate_session_id()
@@ -44,7 +43,7 @@ defmodule MCP.SSE do
 
       {:error, :invalid_jsonrpc} ->
         Logger.warning("Invalid JSON-RPC message format")
-        send_error(conn, 400, "Invalid JSON-RPC message format")
+        send_jsonrpc_error(conn, -32600, "Could not parse message")
     end
   end
 
@@ -58,6 +57,20 @@ defmodule MCP.SSE do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(status, JSON.encode!(%{error: message}))
+  end
+
+  defp send_jsonrpc_error(conn, code, message) do
+    error_response = %{
+      jsonrpc: "2.0",
+      id: nil,
+      error: %{
+        code: code,
+        message: message
+      }
+    }
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, JSON.encode!(error_response))
   end
 
   defp setup_sse_connection(conn) do

@@ -8,8 +8,8 @@ defmodule MCP.Router do
 
   def init(opts) do
     Keyword.validate!(opts,
-      init_callback: fn init_params ->
-        %{server_info: %{}, tools: []}
+      init_callback: fn _init_params ->
+        {:ok, %{server_info: %{}, tools: []}}
       end
     )
   end

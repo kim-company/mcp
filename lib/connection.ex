@@ -15,7 +15,6 @@ defmodule MCP.Connection do
 
   @protocol_version "2024-11-05"
   @vsn Mix.Project.config()[:version]
-  @name __MODULE__
 
   @error_codes %{
     not_initialized: -32601,
@@ -57,7 +56,7 @@ defmodule MCP.Connection do
   @impl GenServer
   def handle_continue({:handle_initialize, id, params}, state) do
     with :ok <- validate_protocol_version(params["protocolVersion"]),
-         {:ok, %{tools: tools, server_info: server_info}} <- state.init_callback(params) do
+         {:ok, %{tools: tools, server_info: server_info}} <- state.init_callback.(params) do
       %{
         protocolVersion: @protocol_version,
         capabilities: %{
@@ -88,11 +87,36 @@ defmodule MCP.Connection do
 
   @impl GenServer
   def handle_call(:ready?, _from, state) do
-    {:reply, state.status == :ready, state}
+    {:reply, state.state == :ready, state}
   end
 
+  @impl GenServer
+  def handle_call({:dispatch, callback, args}, _from, state) do
+    # tools that change the state are dispatched inside the Connection server
+    # in order to synchronize state changes
+    try do
+      case callback.(args, state.assigns) do
+        {:ok, result, new_assigns} ->
+          {:reply, {:ok, result}, %{state | assigns: new_assigns}}
+
+        {:ok, result, new_assigns, metadata} ->
+          {:reply, {:ok, result, metadata}, %{state | assigns: new_assigns}}
+
+        {:error, reason, new_assigns} ->
+          {:reply, {:error, reason}, %{state | assigns: new_assigns}}
+
+        other ->
+          {:reply, other, state}
+      end
+    catch
+      kind, reason ->
+        {:error, "Failed to call tool: #{Exception.format(kind, reason, __STACKTRACE__)}"}
+    end
+  end
+
+  @impl GenServer
   def handle_cast(
-        {:handle_message, %{"method" => "initialize", "params" => params, "id" => id} = msg},
+        {:handle_message, %{"method" => "initialize", "params" => params, "id" => id} = _msg},
         state
       ) do
     state =
@@ -114,14 +138,14 @@ defmodule MCP.Connection do
       |> put_in([:state], :ready)
       |> schedule_next_ping()
 
-    {:reply, :ok, state}
+    {:noreply, state}
   end
 
   def handle_cast(
         {:handle_message, %{"method" => "notifications/initialized"}},
         state
       ) do
-    handle_sse_error("Server is not initialized", @error_codes.not_inizialized, state)
+    handle_sse_error("Server is not initialized", @error_codes.not_initialized, state)
   end
 
   def handle_cast(
@@ -129,13 +153,6 @@ defmodule MCP.Connection do
         state
       ) do
     # Do we have to do something?
-    {:noreply, record_activity(state)}
-  end
-
-  def handle_cast(
-        {:handle_message, %{"method" => "notifications/initialized"}},
-        state
-      ) do
     {:noreply, record_activity(state)}
   end
 
@@ -163,7 +180,7 @@ defmodule MCP.Connection do
   end
 
   def handle_cast(
-        {:handle_message, %{"id" => id, "result" => result}},
+        {:handle_message, %{"id" => id, "result" => _result}},
         state = %{state: :ready}
       ) do
     # This is a ping response.
@@ -179,42 +196,12 @@ defmodule MCP.Connection do
     end
   end
 
-  def handle_cast(
-        {:handle_message, %{"id" => id, "result" => result}},
-        state = %{state: :ready}
-      ) do
-    handle_sse_error("Server is not initialized", @error_codes.not_initialized, state, id)
-  end
-
-  def handle_call({:dispatch, callback, args}, _from, state) do
-    # tools that change the state are dispatched inside the Connection server
-    # in order to synchronize state changes
-    try do
-      case callback.(args, state.assigns) do
-        {:ok, result, new_assigns} ->
-          {:reply, {:ok, result}, %{state | assigns: new_assigns}}
-
-        {:ok, result, new_assigns, metadata} ->
-          {:reply, {:ok, result, metadata}, %{state | assigns: new_assigns}}
-
-        {:error, reason, new_assigns} ->
-          {:reply, {:error, reason}, %{state | assigns: new_assigns}}
-
-        other ->
-          {:reply, other, state}
-      end
-    catch
-      kind, reason ->
-        {:error, "Failed to call tool: #{Exception.format(kind, reason, __STACKTRACE__)}"}
-    end
-  end
-
   @impl GenServer
   def handle_info(:init_timeout, %{state: :ready} = state) do
     {:noreply, state}
   end
 
-  def handle_info(:init_timeout, %{session_id: session_id} = state) do
+  def handle_info(:init_timeout, %{session_id: _session_id} = state) do
     handle_close_connection(state, "Initialization timeout")
   end
 
@@ -224,17 +211,17 @@ defmodule MCP.Connection do
 
   def handle_info(:send_ping, %{state: :ready} = state) do
     case handle_ping(state) do
-      {:ok, state} ->
-        schedule_next_ping(state.assigns)
-        {:noreply, state}
+      {:noreply, new_state} ->
+        schedule_next_ping(new_state)
+        {:noreply, new_state}
 
-      {:error, reason} ->
-        {:stop, {:shutdown, reason}, state}
+      {:stop, reason, new_state} ->
+        {:stop, reason, new_state}
     end
   end
 
   def handle_info(:send_ping, state) do
-    schedule_next_ping(state.assigns)
+    schedule_next_ping(state)
     {:noreply, state}
   end
 
@@ -295,7 +282,7 @@ defmodule MCP.Connection do
     end
   end
 
-  defp handle_sse_error(reason, code, state, id \\ nil, data \\ %{}) do
+  defp handle_sse_error(reason, code, state, id \\ nil, _data \\ %{}) do
     reason
     |> format_sse_error(code)
     |> format_sse_error_response(id)
@@ -317,7 +304,7 @@ defmodule MCP.Connection do
 
   defp format_sse_error(reason, code, data \\ %{}), do: %{code: code, message: reason, data: data}
 
-  defp format_sse_error_response(error, id \\ nil)
+  defp format_sse_error_response(error, id)
 
   defp format_sse_error_response(error, nil), do: %{jsonrpc: "2.0", error: error}
 
