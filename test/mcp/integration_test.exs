@@ -793,7 +793,7 @@ defmodule MCP.IntegrationTest do
   end
 
   # RPC Helper Functions
-  defp send_rpc_request(session_req, method, params \\ %{}, request_id \\ nil) do
+  defp send_rpc_request(session_req, method, params, request_id \\ nil) do
     id = request_id || id()
 
     json_payload = %{
@@ -806,7 +806,7 @@ defmodule MCP.IntegrationTest do
     Req.post!(session_req, json: json_payload)
   end
 
-  defp send_rpc_notification(session_req, method, params \\ %{}) do
+  defp send_rpc_notification(session_req, method, params) do
     json_payload = %{
       jsonrpc: "2.0",
       method: method,
@@ -827,7 +827,7 @@ defmodule MCP.IntegrationTest do
     response
   end
 
-  defp expect_rpc_error(sse_resp, expected_code \\ nil, expected_id \\ nil) do
+  defp expect_rpc_error(sse_resp, expected_code, expected_id \\ nil) do
     response = expect_rpc_response(sse_resp, expected_id)
 
     assert response["error"] != nil
@@ -855,7 +855,7 @@ defmodule MCP.IntegrationTest do
     send_rpc_request(session_req, "tools/list", params)
   end
 
-  defp send_tools_call_request(session_req, tool_name, arguments \\ %{}) do
+  defp send_tools_call_request(session_req, tool_name, arguments) do
     send_rpc_request(session_req, "tools/call", %{
       name: tool_name,
       arguments: arguments

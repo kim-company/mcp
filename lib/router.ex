@@ -1,4 +1,27 @@
 defmodule MCP.Router do
+  @moduledoc """
+  HTTP router for the MCP (Model Context Protocol) server.
+
+  This module provides a Plug-based router that handles Server-Sent Events (SSE) connections
+  and JSON-RPC message routing for MCP clients. It implements the MCP specification over HTTP transport.
+
+  ## Usage
+
+  To use the MCP Router in your application, configure it as a Plug in your endpoint or router:
+
+      plug MCP.Router, init_callback: &MyApp.Tools.init_callback/2
+
+  The router requires an `init_callback` function that will be called when clients initialize
+  their MCP connection. This callback is responsible for providing the tools and server
+  information that will be available to the client.
+
+  ## Routes
+
+  - `GET /` - Establishes an SSE connection for real-time communication
+  - `POST /message` - Receives JSON-RPC messages from the client
+  - All other routes return 404
+  """
+
   use Plug.Router
 
   import Plug.Conn
@@ -6,6 +29,78 @@ defmodule MCP.Router do
   plug(:match)
   plug(:dispatch)
 
+  @doc """
+  Initializes the router with the provided options.
+
+  ## Options
+
+  * `:init_callback` - Required. A function that will be called when a client initializes
+    their MCP connection. The function must have arity 2 and conform to the specification
+    documented below.
+
+  ## init_callback Function
+
+  The `init_callback` function is called during the MCP initialization handshake and must
+  return the tools and server information that will be available to the client.
+
+  ### Function Signature
+
+      init_callback(session_id, init_params) -> result
+
+  ### Parameters
+
+  * `session_id` - A unique string identifier for the client session
+  * `init_params` - A map containing the initialization parameters sent by the client,
+    including the protocol version and any client capabilities
+
+  ### Return Value
+
+  The function must return one of:
+
+  * `{:ok, %{server_info: map(), tools: [tool_spec()]}}` - Success with server info and tools
+  * `{:error, String.t()}` - Error with a descriptive message
+
+  ### Tool Specification
+
+  Each tool in the tools list must be a map with the following keys:
+
+  * `:name` or `"name"` - String. The name of the tool (must be unique)
+  * `:description` or `"description"` - String. A description of what the tool does
+  * `:input_schema` or `"input_schema"` - Map. A JSON Schema defining the tool's input parameters
+  * `:callback` or `"callback"` - Function/1 or nil. The function to call when the tool is executed
+
+  The callback function, if provided, should accept a map of arguments and return
+  `{:ok, result}` or `{:error, reason}`.
+
+  ### Example
+
+      def my_init_callback(session_id, _init_params) do
+        tools = [
+          %{
+            name: "echo",
+            description: "Echoes back the input text",
+            input_schema: %{
+              "type" => "object",
+              "properties" => %{
+                "text" => %{"type" => "string", "description" => "Text to echo"}
+              },
+              "required" => ["text"]
+            },
+            callback: fn %{"text" => text} ->
+              {:ok, %{content: [%{type: "text", text: text}]}}
+            end
+          }
+        ]
+
+        {:ok, %{
+          server_info: %{
+            name: "My MCP Server",
+            version: "1.0.0"
+          },
+          tools: tools
+        }}
+      end
+  """
   def init(opts) do
     Keyword.validate!(opts,
       init_callback: fn _session_id, _init_params ->
@@ -14,6 +109,16 @@ defmodule MCP.Router do
     )
   end
 
+  @doc """
+  Processes incoming HTTP requests through the MCP router.
+
+  This function is automatically called by the Plug pipeline and handles:
+
+  - Setting up the init_callback in the connection assigns
+  - Delegating to the parent Plug.Router implementation
+
+  You typically don't need to call this function directly.
+  """
   def call(conn, opts) do
     conn
     |> assign(:init_callback, opts[:init_callback])

@@ -1,178 +1,214 @@
-# MCP Server (Elixir Implementation)
+# MCP - Model Context Protocol Server
 
-An Elixir implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that communicates via Server-Sent Events (SSE) over HTTP.
+An Elixir implementation of the [Model Context Protocol (MCP)](https://spec.modelcontextprotocol.io/) server that communicates via Server-Sent Events (SSE) over HTTP.
 
 ## Overview
 
-This server implements the MCP 2024-11-05 specification, providing a bridge between AI applications and external data sources and tools. It features asynchronous tool execution, robust connection management, and full JSON-RPC 2.0 compliance.
+This library provides a complete MCP server implementation built on OTP principles using GenServers, supervision trees, and fault tolerance. It enables you to create custom tools that AI models can discover and execute through a standardized protocol.
 
 ## Features
 
-### Core Architecture
-- **GenServer-based**: Built on Elixir's OTP principles for fault tolerance and concurrency
+- **Standards Compliant**: Implements MCP specification 2024-11-05
 - **SSE Transport**: Real-time communication via Server-Sent Events over HTTP
-- **Async Tool Execution**: Non-blocking tool calls with concurrent execution support
-- **Connection Management**: Session-based connections with timeout handling and lifecycle management
-- **JSON-RPC 2.0 Compliant**: Full compatibility with the JSON-RPC 2.0 specification
-
-### Security
-- **Localhost Only**: HTTP server restricted to localhost access for security
-- **Session Management**: Secure session-based connections with unique identifiers
-- **Timeout Protection**: Automatic connection cleanup after inactivity periods
+- **JSON-RPC 2.0**: Full support for request/response/notification patterns
+- **Fault Tolerant**: Built on OTP with proper supervision and error handling
+- **Session Management**: UUID-based session tracking with automatic cleanup
+- **Async Tool Execution**: Non-blocking tool execution with proper timeout handling
+- **Flexible Tool Definition**: Support for both atom and string keys in tool specifications
 
 ## Installation
 
-Since this project is not yet published on Hex.pm, install directly from Git:
+Add `mcp` to your list of dependencies in `mix.exs`:
+
+```elixir
+def deps do
+  [
+    {:mcp, "~> 0.1.0"}
+  ]
+end
+```
+
+## Quick Start
+
+### 1. Define Your Tools
+
+Create an initialization callback that defines the tools available to MCP clients:
+
+```elixir
+defmodule MyApp.MCPTools do
+  def init_callback(_session_id, _init_params) do
+    tools = [
+      %{
+        name: "echo",
+        description: "Echoes back the input text",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "text" => %{
+              "type" => "string", 
+              "description" => "Text to echo back"
+            }
+          },
+          "required" => ["text"]
+        },
+        callback: fn %{"text" => text} ->
+          {:ok, %{
+            content: [
+              %{type: "text", text: "Echo: #{text}"}
+            ]
+          }}
+        end
+      },
+      %{
+        name: "get_time",
+        description: "Returns the current time",
+        input_schema: %{"type" => "object", "properties" => %{}},
+        callback: fn _args ->
+          time = DateTime.utc_now() |> DateTime.to_string()
+          {:ok, %{
+            content: [
+              %{type: "text", text: "Current time: #{time}"}
+            ]
+          }}
+        end
+      }
+    ]
+
+    {:ok, %{
+      server_info: %{
+        name: "My MCP Server",
+        version: "1.0.0"
+      },
+      tools: tools
+    }}
+  end
+end
+```
+
+### 2. Set Up the Router
+
+Configure the MCP router in your Phoenix endpoint or Plug pipeline:
+
+```elixir
+# In your Phoenix endpoint
+defmodule MyAppWeb.Endpoint do
+  use Phoenix.Endpoint, otp_app: :my_app
+
+  # Add the MCP router
+  plug MCP.Router, init_callback: &MyApp.MCPTools.init_callback/2
+  
+  # Your other plugs...
+end
+```
+
+Or use it standalone with Bandit:
+
+```elixir
+# In your application.ex
+def start(_type, _args) do
+  children = [
+    # Start your app supervision tree
+    MCP.Application,
+    
+    # Start the HTTP server
+    {Bandit, 
+     plug: {MCP.Router, init_callback: &MyApp.MCPTools.init_callback/2},
+     scheme: :http,
+     port: 4000}
+  ]
+
+  opts = [strategy: :one_for_one, name: MyApp.Supervisor]
+  Supervisor.start_link(children, opts)
+end
+```
+
+### 3. Start Your Server
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd mcp
-
-# Install dependencies
-mix deps.get
-
-# Compile the project
-mix compile
+mix run --no-halt
 ```
+
+Your MCP server will be available at `http://localhost:4000`.
 
 ## Usage
 
-### Starting the Server
+### Client Connection
+
+Clients connect to your server by:
+
+1. **Establishing SSE Connection**: `GET /` to start receiving server events
+2. **Sending Messages**: `POST /message?sessionId=<session_id>` to send JSON-RPC messages
+
+### Tool Specification Format
+
+Tools must include these fields:
 
 ```elixir
-# Start the application
-mix run --no-halt
-
-# Or in IEx
-iex -S mix
-```
-
-The server will start on `http://localhost:4000` by default.
-
-### Registering Tools
-
-Tools can be registered with the server using the tool registration API:
-
-```elixir
-# Define a tool
-tool = %{
-  name: "example_tool",
-  description: "An example tool that demonstrates MCP functionality",
-  inputSchema: %{
-    type: "object",
-    properties: %{
-      message: %{type: "string", description: "A message to process"}
+%{
+  name: "tool_name",                    # Unique identifier
+  description: "What the tool does",    # Human-readable description  
+  input_schema: %{                      # JSON Schema for parameters
+    "type" => "object",
+    "properties" => %{
+      "param1" => %{"type" => "string"}
     },
-    required: ["message"]
+    "required" => ["param1"]
   },
-  callback: fn args -> 
-    {:ok, "Processed: #{args["message"]}"} 
+  callback: fn args ->                  # Function to execute
+    # Tool logic here
+    {:ok, result} | {:error, reason}
   end
 }
-
-# Register the tool
-MCP.Server.register(tool)
 ```
 
-### Client Connection Flow
+### Tool Callback Return Format
 
-1. **Establish SSE Connection**: `GET /` to establish Server-Sent Events connection
-2. **Initialize**: Send `initialize` message via `POST /message`
-3. **Get Tools**: Call `tools/list` to retrieve available tools
-4. **Execute Tools**: Call `tools/call` to execute registered tools
-5. **Maintain Connection**: Handle periodic pings and activity timeouts
+Tool callbacks should return results in MCP format:
 
-## MCP Protocol Compliance
+```elixir
+# Success response
+{:ok, %{
+  content: [
+    %{type: "text", text: "Result text"},
+    %{type: "image", data: "base64_image", mimeType: "image/png"}
+  ]
+}}
 
-### ✅ Implemented Features
-
-| Feature Category | Feature | Status | Notes |
-|-----------------|---------|---------|-------|
-| **Base Protocol** | JSON-RPC 2.0 | ✅ | Full compliance with message structure |
-| | Protocol Version Negotiation | ✅ | Supports MCP 2024-11-05 |
-| | Error Handling | ✅ | Proper error codes and messages |
-| **Lifecycle Management** | Connection Initialization | ✅ | SSE-based connection establishment |
-| | Initialize/Initialized Handshake | ✅ | Full initialization sequence |
-| | Ping/Pong | ✅ | Connection keepalive mechanism |
-| | Graceful Shutdown | ✅ | Proper connection cleanup |
-| **Server Features - Tools** | Tool Registration | ✅ | Dynamic tool registration |
-| | Tool Listing (`tools/list`) | ✅ | Enumerate available tools |
-| | Tool Execution (`tools/call`) | ✅ | Synchronous and asynchronous execution |
-| | Tool Input Validation | ✅ | JSON Schema-based validation |
-| | Tool Error Handling | ✅ | Proper error responses with `isError` flag |
-| | Concurrent Tool Execution | ✅ | Multiple tools can run simultaneously |
-| **Transport** | Server-Sent Events (SSE) | ✅ | Real-time bidirectional communication |
-| | HTTP POST for Messages | ✅ | JSON-RPC messages via HTTP |
-| | Session Management | ✅ | UUID-based session tracking |
-| **Connection Management** | Inactivity Timeouts | ✅ | 30-minute inactivity timeout |
-| | Initialization Timeouts | ✅ | 30-second initialization timeout |
-| | Connection State Tracking | ✅ | State machine: connected → initialized → ready |
-
-### ❌ Not Yet Implemented
-
-| Feature Category | Feature | Status | Priority |
-|-----------------|---------|---------|----------|
-| **Server Features - Resources** | Resource Registration | ❌ | Medium |
-| | Resource Listing (`resources/list`) | ❌ | Medium |
-| | Resource Reading (`resources/read`) | ❌ | Medium |
-| | Resource Templates | ❌ | Low |
-| | Resource Subscriptions | ❌ | Low |
-| **Server Features - Prompts** | Prompt Registration | ❌ | Medium |
-| | Prompt Listing (`prompts/list`) | ❌ | Medium |
-| | Prompt Retrieval (`prompts/get`) | ❌ | Medium |
-| **Client Features** | Sampling Support | ❌ | Low |
-| | Root Directory Lists | ❌ | Low |
-| **Advanced Features** | Tool Input Completion | ❌ | Low |
-| | Progress Notifications | ❌ | Medium |
-| | Cancellation Support | ❌ | Medium |
-| **Security** | Authentication/Authorization | ❌ | High |
-| | Access Control Lists | ❌ | High |
-| **Transport Alternatives** | WebSocket Transport | ❌ | Low |
-| | Unix Socket Transport | ❌ | Low |
-
-### Protocol Version Support
-
-- **Target Version**: MCP 2024-11-05
-- **Backwards Compatibility**: None (first implementation)
-- **Forward Compatibility**: Version negotiation supports newer clients
-
-## Development
-
-### Running Tests
-
-```bash
-# Run the test suite
-mix test
-
-# Test async behavior specifically
-elixir test_async.exs
+# Error response  
+{:error, "Error description"}
 ```
 
-### Project Structure
+## Architecture
 
-```
-lib/
-├── mcp/
-│   └── application.ex      # OTP Application
-├── connection.ex           # Connection state management
-├── mcp.ex                 # Main module
-├── router.ex              # HTTP routing
-├── server.ex              # MCP protocol implementation
-├── sse.ex                 # SSE transport layer
-└── supervisor.ex          # Process supervision
-```
+### Core Components
 
-### Key Components
+- **`MCP.Application`**: OTP application entry point and supervision
+- **`MCP.Router`**: HTTP routing with Plug, handles SSE and JSON-RPC endpoints
+- **`MCP.Connection`**: GenServer managing individual client connections and protocol state
+- **`MCP.SSE`**: Server-Sent Events transport layer implementation
 
-- **`MCP.Server`**: Core GenServer handling MCP protocol messages with both sync and async processing
-- **`MCP.SSE`**: Manages SSE connections and HTTP message routing with async tool execution
-- **`MCP.Connection`**: Handles individual client connections, timeouts, and state management
-- **`MCP.Router`**: HTTP routing with localhost-only security restrictions
+### Message Flow
+
+1. Client establishes SSE connection via `GET /`
+2. Server responds with session endpoint URL
+3. Client sends `initialize` request with protocol version
+4. Server validates and responds with capabilities and tools
+5. Client sends `notifications/initialized` to complete handshake
+6. Client can now call tools via `tools/call` requests
+
+### Session Management
+
+- Each connection gets a unique session ID
+- Sessions are tracked in an OTP Registry
+- Automatic cleanup on disconnection or timeout
+- 30-second initialization timeout
+- 30-minute inactivity timeout
 
 ## Configuration
 
-The server can be configured through application environment:
+### Environment Variables
+
+Set these in your application configuration:
 
 ```elixir
 # config/config.exs
@@ -181,43 +217,85 @@ config :mcp,
   host: "localhost"
 ```
 
+### Development Commands
+
+```bash
+# Install dependencies
+mix deps.get
+
+# Compile project
+mix compile
+
+# Run server
+mix run --no-halt
+
+# Run tests
+mix test
+
+# Interactive shell
+iex -S mix
+
+# Format code
+mix format
+```
+
+## Error Handling
+
+The server handles errors gracefully:
+
+- **Protocol Errors**: Invalid JSON-RPC messages return appropriate error codes
+- **Tool Errors**: Tool execution failures are returned as successful responses with `isError: true`
+- **Timeouts**: Connections that don't initialize or remain inactive are automatically closed
+- **Process Crashes**: Supervision tree ensures failed processes are restarted
+
+## Advanced Usage
+
+### Custom Validation
+
+Implement custom tool validation by extending the built-in validation:
+
+```elixir
+def init_callback(session_id, init_params) do
+  # Custom logic based on session or client capabilities
+  if authorized?(session_id) do
+    {:ok, %{tools: get_tools_for_user(session_id), server_info: %{}}}
+  else
+    {:error, "Unauthorized"}
+  end
+end
+```
+
+### Dynamic Tool Loading
+
+Tools can be loaded dynamically based on client needs:
+
+```elixir
+def init_callback(_session_id, %{"clientInfo" => client_info}) do
+  tools = case client_info["name"] do
+    "development-client" -> development_tools()
+    "production-client" -> production_tools()
+    _ -> standard_tools()
+  end
+  
+  {:ok, %{tools: tools, server_info: %{}}}
+end
+```
+
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Add tests for new functionality
-5. Ensure all tests pass: `mix test`
+4. Add tests
+5. Run `mix test` and `mix format`
 6. Submit a pull request
-
-## Protocol Flow Example
-
-```
-Client                    Server
-  |                         |
-  |-- GET / (SSE) --------->|
-  |<-- session_id, endpoint |
-  |                         |
-  |-- POST /message ------->|
-  |   (initialize)          |
-  |<-- 202 Accepted --------|
-  |<-- SSE: capabilities ---|
-  |                         |
-  |-- POST /message ------->|
-  |   (tools/list)          |
-  |<-- 202 Accepted --------|
-  |<-- SSE: tools list ----|
-  |                         |
-  |-- POST /message ------->|
-  |   (tools/call)          |
-  |<-- 202 Accepted --------|
-  |<-- SSE: tool result ---|
-```
 
 ## License
 
-[Add your license information here]
+This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Acknowledgments
+## Links
 
-This implementation is based on the [tidewave](https://github.com/tidewave-ai/tidewave_phoenix) project's MCP implementation, used under the MIT License.
+- [Model Context Protocol Specification](https://spec.modelcontextprotocol.io/)
+- [MCP Official Documentation](https://modelcontextprotocol.io/)
+- [Elixir Documentation](https://hexdocs.pm/elixir/)

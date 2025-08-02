@@ -5,6 +5,8 @@ defmodule MCP.Connection do
   use GenServer
   require Logger
 
+  alias MCP.Connection.ToolParseException
+
   @type init_callback_result ::
           {:ok, %{tools: list(tool_spec()), server_info: map()}} | {:error, String.t()}
 
@@ -62,10 +64,42 @@ defmodule MCP.Connection do
     })
   end
 
+  @doc """
+  Checks if a connection is ready to receive MCP requests.
+
+  A connection is considered ready after the client has sent both the `initialize` 
+  request and the `notifications/initialized` notification.
+
+  ## Parameters
+
+  * `pid` - The GenServer process ID of the connection
+
+  ## Returns
+
+  * `true` - If the connection is ready for tool calls
+  * `false` - If the connection is still initializing
+  """
+  @spec ready?(pid()) :: boolean()
   def ready?(pid) do
     GenServer.call(pid, :ready?)
   end
 
+  @doc """
+  Sends a JSON-RPC message to a connection for processing.
+
+  This function is used internally by the SSE handler to route incoming
+  messages to the appropriate connection process.
+
+  ## Parameters
+
+  * `pid` - The GenServer process ID of the connection
+  * `message` - A JSON-RPC message map conforming to the MCP specification
+
+  ## Returns
+
+  * `:ok` - The message was successfully queued for processing
+  """
+  @spec handle_message(pid(), map()) :: :ok
   def handle_message(pid, message) do
     GenServer.cast(pid, {:handle_message, message})
   end
@@ -432,62 +466,129 @@ defmodule MCP.Connection do
   @doc """
   Validates a tool specification to ensure it conforms to the expected internal format.
 
-  Returns `:ok` if valid, `{:error, reason}` if invalid.
+  This function performs comprehensive validation of tool specifications, checking:
+
+  - Required fields are present (:name, :description, :input_schema)
+  - Field types are correct (name and description must be non-empty strings)
+  - Input schema is a valid JSON Schema map
+  - Callback is either a function/1 or nil
+  - Supports both atom and string keys for flexibility
+
+  ## Parameters
+
+  * `tool_spec` - A map containing the tool specification
+
+  ## Returns
+
+  * `:ok` - If the tool specification is valid
+  * `{:error, reason}` - If validation fails, with a descriptive error message
+
+  ## Examples
+
+      iex> MCP.Connection.validate_tool_spec(%{
+      ...>   name: "test_tool",
+      ...>   description: "A test tool",
+      ...>   input_schema: %{"type" => "object"},
+      ...>   callback: fn _args -> {:ok, %{}} end
+      ...> })
+      :ok
+
+      iex> MCP.Connection.validate_tool_spec(%{name: ""})
+      {:error, "Tool name must be a non-empty string"}
   """
   @spec validate_tool_spec(map()) :: :ok | {:error, String.t()}
   def validate_tool_spec(tool_spec) when is_map(tool_spec) do
-    with :ok <- validate_tool_name(tool_spec),
-         :ok <- validate_tool_description(tool_spec),
-         :ok <- validate_tool_input_schema(tool_spec),
-         :ok <- validate_tool_callback(tool_spec) do
+    try do
+      %{}
+      |> parse_tool_name(tool_spec)
+      |> parse_tool_description(tool_spec)
+      |> parse_tool_input_schema(tool_spec)
+      |> parse_tool_callback(tool_spec)
+
       :ok
+    rescue
+      e in ToolParseException ->
+        {:error, Exception.message(e)}
     end
   end
 
   def validate_tool_spec(_), do: {:error, "Tool specification must be a map"}
 
-  defp validate_tool_name(%{name: name}) when is_binary(name) and name != "" do
-    :ok
-  end
+  defp parse_tool_name(parsed_tool, tool_spec) do
+    # Handle both atom and string keys
+    name = tool_spec[:name] || tool_spec["name"]
 
-  defp validate_tool_name(%{name: _}), do: {:error, "Tool name must be a non-empty string"}
-  defp validate_tool_name(_), do: {:error, "Tool specification must include a 'name' field"}
+    cond do
+      is_nil(name) ->
+        raise ToolParseException, "Tool specification must include a 'name' field"
 
-  defp validate_tool_description(%{description: desc}) when is_binary(desc) and desc != "" do
-    :ok
-  end
+      not is_binary(name) ->
+        raise ToolParseException, "Tool name must be a non-empty string"
 
-  defp validate_tool_description(%{description: _}),
-    do: {:error, "Tool description must be a non-empty string"}
+      name == "" ->
+        raise ToolParseException, "Tool name must be a non-empty string"
 
-  defp validate_tool_description(_),
-    do: {:error, "Tool specification must include a 'description' field"}
-
-  defp validate_tool_input_schema(%{input_schema: schema}) when is_map(schema) do
-    case validate_json_schema_structure(schema) do
-      :ok -> :ok
-      {:error, reason} -> {:error, "Invalid input_schema: #{reason}"}
+      true ->
+        Map.put(parsed_tool, :name, name)
     end
   end
 
-  defp validate_tool_input_schema(%{input_schema: _}),
-    do: {:error, "Tool input_schema must be a map"}
+  defp parse_tool_description(parsed_tool, tool_spec) do
+    # Handle both atom and string keys
+    description = tool_spec[:description] || tool_spec["description"]
 
-  defp validate_tool_input_schema(_),
-    do: {:error, "Tool specification must include an 'input_schema' field"}
+    cond do
+      is_nil(description) ->
+        raise ToolParseException, "Tool specification must include a 'description' field"
 
-  defp validate_tool_callback(%{callback: callback}) when is_function(callback, 1) do
-    :ok
+      not is_binary(description) ->
+        raise ToolParseException, "Tool description must be a non-empty string"
+
+      description == "" ->
+        raise ToolParseException, "Tool description must be a non-empty string"
+
+      true ->
+        Map.put(parsed_tool, :description, description)
+    end
   end
 
-  defp validate_tool_callback(%{callback: nil}) do
-    :ok
+  defp parse_tool_input_schema(parsed_tool, tool_spec) do
+    # Handle both atom and string keys
+    schema = tool_spec[:input_schema] || tool_spec["input_schema"]
+
+    cond do
+      is_nil(schema) ->
+        raise ToolParseException, "Tool specification must include an 'input_schema' field"
+
+      not is_map(schema) ->
+        raise ToolParseException, "Tool input_schema must be a map"
+
+      true ->
+        case validate_json_schema_structure(schema) do
+          :ok ->
+            Map.put(parsed_tool, :input_schema, schema)
+
+          {:error, reason} ->
+            raise ToolParseException, "Invalid input_schema: #{reason}"
+        end
+    end
   end
 
-  defp validate_tool_callback(%{callback: _}),
-    do: {:error, "Tool callback must be a function/1 or nil"}
+  defp parse_tool_callback(parsed_tool, tool_spec) do
+    # Handle both atom and string keys
+    callback = tool_spec[:callback] || tool_spec["callback"]
 
-  defp validate_tool_callback(_), do: :ok
+    cond do
+      is_nil(callback) ->
+        Map.put(parsed_tool, :callback, nil)
+
+      is_function(callback, 1) ->
+        Map.put(parsed_tool, :callback, callback)
+
+      true ->
+        raise ToolParseException, "Tool callback must be a function/1 or nil"
+    end
+  end
 
   defp validate_json_schema_structure(schema) when is_map(schema) do
     # Basic JSON Schema validation - check for required type field if properties are present
