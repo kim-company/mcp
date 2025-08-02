@@ -1,27 +1,3 @@
-# This file is based on tidewave: https://github.com/tidewave-ai/tidewave_phoenix/blob/a289afe9e88b54081d53527fdf5493b5ffa22131/lib/tidewave/mcp/connection.ex
-#
-# MIT License
-#
-# Copyright (c) 2025 kEND
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-
 defmodule MCP.Connection do
   @moduledoc false
   # Internal state management for SSE connections
@@ -35,12 +11,20 @@ defmodule MCP.Connection do
   @init_timeout 30_000
   # 30 minutes in milliseconds
   @inactivity_timeout 30 * 60 * 1000
+  @sse_keepalive_timeout_ms 15_000
 
-  # State transitions
-  # :connected -> :initialized -> :ready
+  @protocol_version "2024-11-05"
+  @vsn Mix.Project.config()[:version]
+  @name __MODULE__
+
+  @error_codes %{
+    not_initialized: -32601,
+    invalid_protocol: -32602,
+    request_not_found: -32603
+  }
 
   @impl GenServer
-  def init({session_id, conn}) do
+  def init({session_id, conn, opts}) do
     Logger.metadata(session_id: session_id, mcp: true)
     # Start initialization timeout
     Process.send_after(self(), :init_timeout, @init_timeout)
@@ -54,128 +38,152 @@ defmodule MCP.Connection do
       init_received: false,
       initialized_received: false,
       last_activity: System.monotonic_time(:millisecond),
+      sse_keepalive_timeout: @sse_keepalive_timeout_ms,
       # Add reference to the timeout timer
       timeout_ref: timeout_ref,
       requests: %{},
-      # We convert the configuration into the `assigns` map passed to tools
-      # conn.private.config
-      assigns: %{}
+      init_callback: opts[:init_callback]
     })
-  end
-
-  def handle_initialize(pid) do
-    GenServer.call(pid, :handle_initialize)
-  end
-
-  def handle_initialized(pid) do
-    GenServer.call(pid, :handle_initialized)
   end
 
   def ready?(pid) do
     GenServer.call(pid, :ready?)
   end
 
-  def record_activity(pid) do
-    GenServer.call(pid, :record_activity)
-  end
-
-  def check_activity_timeout(pid) do
-    GenServer.call(pid, :check_activity_timeout)
-  end
-
-  def handle_result(pid, id) do
-    GenServer.call(pid, {:handle_result, id})
-  end
-
-  def connect_params_and_assigns(pid) do
-    GenServer.call(pid, :connect_params_and_assigns)
-  end
-
-  def dispatch(pid, callback, args) do
-    GenServer.call(pid, {:dispatch, callback, args})
-  end
-
-  def send_sse_message(pid, message) do
-    GenServer.cast(pid, {:send_sse_message, message})
+  def handle_message(pid, message) do
+    GenServer.cast(pid, {:handle_message, message})
   end
 
   @impl GenServer
-  def handle_cast({:send_sse_message, message}, state) do
-    case handle_sse_message(state.conn, state.session_id, message) do
-      {:ok, conn} -> {:noreply, %{state | conn: conn}}
-      {:error, reason} -> {:stop, {:shutdown, reason}, state}
-    end
-  end
-
-  @impl GenServer
-  def handle_call(:handle_initialize, _from, state) do
-    new_state = %{state | init_received: true, last_activity: System.monotonic_time(:millisecond)}
-    {:reply, :ok, new_state}
-  end
-
-  def handle_call(:handle_initialized, _from, %{init_received: true} = state) do
-    new_state = %{
-      state
-      | initialized_received: true,
-        state: :ready,
-        last_activity: System.monotonic_time(:millisecond)
-    }
-
-    schedule_next_ping(state.assigns)
-
-    {:reply, :ok, new_state}
-  end
-
-  def handle_call(:handle_initialized, _from, state) do
-    {:reply, {:error, :not_initialized}, state}
-  end
-
-  def handle_call(:ready?, _from, %{state: :ready} = state) do
-    {:reply, true, state}
-  end
-
-  def handle_call(:ready?, _from, state) do
-    {:reply, false, state}
-  end
-
-  def handle_call(:record_activity, _from, state) do
-    # Cancel existing timeout
-    if state.timeout_ref, do: Process.cancel_timer(state.timeout_ref)
-    # Schedule new timeout
-    timeout_ref = Process.send_after(self(), :inactivity_timeout, @inactivity_timeout)
-
-    new_state = %{
-      state
-      | last_activity: System.monotonic_time(:millisecond),
-        timeout_ref: timeout_ref
-    }
-
-    {:reply, :ok, new_state}
-  end
-
-  def handle_call(:check_activity_timeout, _from, state) do
-    current_time = System.monotonic_time(:millisecond)
-    time_since_activity = current_time - state.last_activity
-
-    if time_since_activity >= @inactivity_timeout do
-      {:reply, {:error, :activity_timeout}, state}
+  def handle_continue({:handle_initialize, id, params}, state) do
+    with :ok <- validate_protocol_version(params["protocolVersion"]),
+         {:ok, %{tools: tools, server_info: server_info}} <- state.init_callback(params) do
+      %{
+        protocolVersion: @protocol_version,
+        capabilities: %{
+          tools: %{
+            listChanged: false
+          }
+        },
+        serverInfo: server_info,
+        tools: tools
+      }
+      |> format_sse_response(id)
+      |> handle_sse_response(state)
     else
-      {:reply, :ok, state}
+      {:error, reason} ->
+        handle_sse_error(reason, @error_codes.invalid_protocol, state, id)
     end
   end
 
-  def handle_call({:handle_result, id}, _from, state) do
-    result =
-      case Map.get(state.requests, id) do
-        true -> :ok
-        _ -> {:error, :not_found}
-      end
-
-    {:reply, result, %{state | requests: Map.delete(state.requests, id)}}
+  def handle_continue({:handle_tools_list, id}, state) do
+    dbg()
+    {:noreply, state}
   end
 
-  def handle_call(:connect_params_and_assigns, _from, state) do
-    {:reply, {state.conn.query_params, state.assigns}, state}
+  def handle_continue({:handle_tools_call, id, params}, state) do
+    dbg()
+    {:noreply, state}
+  end
+
+  @impl GenServer
+  def handle_call(:ready?, _from, state) do
+    {:reply, state.status == :ready, state}
+  end
+
+  def handle_cast(
+        {:handle_message, %{"method" => "initialize", "params" => params, "id" => id} = msg},
+        state
+      ) do
+    state =
+      state
+      |> record_activity()
+      |> put_in([:init_received], true)
+
+    {:noreply, state, {:continue, {:handle_initialize, id, params}}}
+  end
+
+  def handle_cast(
+        {:handle_message, %{"method" => "notifications/initialized"}},
+        state = %{init_received: true}
+      ) do
+    state =
+      state
+      |> record_activity()
+      |> put_in([:initialized_received], true)
+      |> put_in([:state], :ready)
+      |> schedule_next_ping()
+
+    {:reply, :ok, state}
+  end
+
+  def handle_cast(
+        {:handle_message, %{"method" => "notifications/initialized"}},
+        state
+      ) do
+    handle_sse_error("Server is not initialized", @error_codes.not_inizialized, state)
+  end
+
+  def handle_cast(
+        {:handle_message, %{"method" => "notifications/cancelled"}},
+        state
+      ) do
+    # Do we have to do something?
+    {:noreply, record_activity(state)}
+  end
+
+  def handle_cast(
+        {:handle_message, %{"method" => "notifications/initialized"}},
+        state
+      ) do
+    {:noreply, record_activity(state)}
+  end
+
+  def handle_cast(
+        {:handle_message, %{"method" => "ping", "id" => id}},
+        state
+      ) do
+    %{}
+    |> format_sse_response(id)
+    |> handle_sse_response(state)
+  end
+
+  def handle_cast(
+        {:handle_message, %{"method" => "tools/list", "id" => id}},
+        state
+      ) do
+    {:noreply, state, {:continue, {:handle_tools_list, id}}}
+  end
+
+  def handle_cast(
+        {:handle_message, %{"method" => "tools/call", "id" => id, "params" => params}},
+        state
+      ) do
+    {:noreply, state, {:continue, {:handle_tools_call, id, params}}}
+  end
+
+  def handle_cast(
+        {:handle_message, %{"id" => id, "result" => result}},
+        state = %{state: :ready}
+      ) do
+    # This is a ping response.
+    {val, state} =
+      state
+      |> record_activity()
+      |> pop_in([:requests, id])
+
+    if val == true do
+      {:noreply, state}
+    else
+      handle_sse_error("Request not found", @error_codes.request_not_found, state, id)
+    end
+  end
+
+  def handle_cast(
+        {:handle_message, %{"id" => id, "result" => result}},
+        state = %{state: :ready}
+      ) do
+    handle_sse_error("Server is not initialized", @error_codes.not_initialized, state, id)
   end
 
   def handle_call({:dispatch, callback, args}, _from, state) do
@@ -207,23 +215,11 @@ defmodule MCP.Connection do
   end
 
   def handle_info(:init_timeout, %{session_id: session_id} = state) do
-    Logger.warning("Initialization timeout for session #{session_id}")
-
-    conn =
-      close_connection(state.conn, state.session_id, "Initialization timeout after 30 seconds")
-
-    {:stop, {:shutdown, :closed}, %{state | conn: conn}}
+    handle_close_connection(state, "Initialization timeout")
   end
 
   def handle_info(:inactivity_timeout, state) do
-    conn =
-      close_connection(
-        state.conn,
-        state.session_id,
-        "Connection closed due to 5 minutes of inactivity"
-      )
-
-    {:stop, {:shutdown, :inactivity_timeout}, %{state | conn: conn}}
+    handle_close_connection(state, "Inactivity timeout")
   end
 
   def handle_info(:send_ping, %{state: :ready} = state) do
@@ -242,60 +238,124 @@ defmodule MCP.Connection do
     {:noreply, state}
   end
 
-  def handle_info({:plug_conn, :sent}, state) do
-    {:noreply, state}
+  def handle_info(_message, state), do: {:noreply, state}
+
+  defp schedule_next_ping(%{sse_keepalive_timeout: timeout}) do
+    Process.send_after(self(), :send_ping, timeout)
   end
 
-  def handle_info(message, state) do
-    Logger.error("Unexpected message: #{inspect(message)}")
-    {:noreply, state}
+  defp record_activity(state) do
+    # Cancel existing timeout
+    if state.timeout_ref, do: Process.cancel_timer(state.timeout_ref)
+    # Schedule new timeout
+    timeout_ref = Process.send_after(self(), :inactivity_timeout, @inactivity_timeout)
+
+    state
+    |> put_in([:last_activity], System.monotonic_time(:millisecond))
+    |> put_in([:timeout_ref], timeout_ref)
   end
 
-  defp schedule_next_ping(opts) do
-    case Map.get(opts, :sse_keepalive_timeout, 15_000) do
-      # Don't schedule next ping if disabled
-      :infinity ->
+  defp validate_protocol_version(client_version) do
+    cond do
+      is_nil(client_version) ->
+        {:error, "Protocol version is required"}
+
+      client_version < unquote(@protocol_version) ->
+        {:error,
+         "Unsupported protocol version. Server supports #{unquote(@protocol_version)} or later"}
+
+      true ->
         :ok
-
-      timeout when is_integer(timeout) ->
-        Process.send_after(self(), :send_ping, timeout)
-    end
-  end
-
-  defp close_connection(conn, _session_id, reason) do
-    Logger.info("Closing SSE connection: #{inspect(reason)}")
-
-    case chunk(conn, "event: close\ndata: #{reason}\n\n") do
-      {:ok, conn} -> halt(conn)
-      {:error, _reason} -> halt(conn)
-    end
-  end
-
-  defp handle_sse_message(conn, _session_id, msg) do
-    sse_message = ["event: message\ndata: ", JSON.encode_to_iodata!(msg), "\n\n"]
-
-    case chunk(conn, sse_message) do
-      {:ok, conn} -> {:ok, conn}
-      {:error, reason} -> {:error, reason}
     end
   end
 
   defp handle_ping(state) do
-    ping_notification = %{
-      id: System.unique_integer([:positive]),
-      jsonrpc: "2.0",
-      method: "ping"
-    }
+    id = generate_id()
+    state = put_in(state, [:requests, id], true)
 
-    state = %{state | requests: Map.put(state.requests, ping_notification.id, true)}
+    id
+    |> format_sse_response(id)
+    |> handle_sse_response(state, "ping")
+  end
 
-    case chunk(state.conn, [
-           "event: message\ndata: ",
-           JSON.encode_to_iodata!(ping_notification),
-           "\n\n"
-         ]) do
-      {:ok, conn} -> {:ok, %{state | conn: conn}}
-      {:error, reason} -> {:error, reason}
+  defp handle_close_connection(state, reason) do
+    Logger.info("Closing SSE connection: #{inspect(reason)}")
+
+    resp =
+      %{reason: inspect(reason)}
+      |> format_sse_response()
+      |> handle_sse_response(state, "close")
+
+    case resp do
+      {:noreply, state} ->
+        halt(state.conn)
+        {:stop, reason, state}
+        {:stop, reason, state}
+        {:stop, reason, state}
     end
   end
+
+  defp handle_sse_error(reason, code, state, id \\ nil, data \\ %{}) do
+    reason
+    |> format_sse_error(code)
+    |> format_sse_error_response(id)
+    |> handle_sse_response(state)
+  end
+
+  defp handle_sse_response(message, state, event \\ "message") do
+    sse_message = ["event: #{event}\ndata: ", JSON.encode_to_iodata!(message), "\n\n"]
+
+    case chunk(state.conn, sse_message) do
+      {:ok, conn} -> {:noreply, %{state | conn: conn}}
+      {:error, reason} -> {:stop, {:shutdown, reason}, state}
+    end
+  end
+
+  defp format_sse_response(id), do: %{jsonrpc: "2.0", id: id}
+
+  defp format_sse_response(result, id), do: %{jsonrpc: "2.0", id: id, result: result}
+
+  defp format_sse_error(reason, code, data \\ %{}), do: %{code: code, message: reason, data: data}
+
+  defp format_sse_error_response(error, id \\ nil)
+
+  defp format_sse_error_response(error, nil), do: %{jsonrpc: "2.0", error: error}
+
+  defp format_sse_error_response(error, id), do: %{jsonrpc: "2.0", id: id, error: error}
+
+  defp generate_id(length \\ 5) do
+    :crypto.strong_rand_bytes(length)
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, length)
+  end
+
+  # defp safe_call_tool(request_id, params, state_pid) do
+  #     handle_call_tool(request_id, params, state_pid)
+  #   catch
+  #     kind, reason ->
+  #       # tool exceptions should be treated as successful response with isError: true
+  #       # https://spec.modelcontextprotocol.io/specification/2024-11-05/server/tools/#error-handling
+  #       {:ok,
+  #        %{
+  #          jsonrpc: "2.0",
+  #          id: request_id,
+  #          result: %{
+  #            content: [
+  #              %{
+  #                type: "text",
+  #                text: "Failed to call tool: #{Exception.format(kind, reason, __STACKTRACE__)}"
+  #              }
+  #            ],
+  #            isError: true
+  #          }
+  #        }}
+  #   end
+  # defp result_or_error(request_id, {:error, message}) when is_binary(message) do
+  #   # tool errors should be treated as successful response with isError: true
+  #   # https://spec.modelcontextprotocol.io/specification/2024-11-05/server/tools/#error-handling
+  #   result_or_error(
+  #     request_id,
+  #     {:ok, %{content: [%{type: "text", text: message}], isError: true}}
+  #   )
+  # end
 end

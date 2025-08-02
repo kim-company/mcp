@@ -22,7 +22,9 @@ defmodule MCP.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:plug, "~> 1.15"}
+      {:plug, "~> 1.15"},
+      {:bandit, ">= 0.0.0", only: :test},
+      {:req, ">= 0.5.0", only: :test}
     ]
   end
 end

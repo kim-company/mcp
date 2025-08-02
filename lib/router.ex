@@ -3,13 +3,26 @@ defmodule MCP.Router do
 
   import Plug.Conn
 
-  plug :match
-  plug :check_remote_ip
-  plug :dispatch
+  plug(:match)
+  plug(:dispatch)
+
+  def init(opts) do
+    Keyword.validate!(opts,
+      init_callback: fn init_params ->
+        %{server_info: %{}, tools: []}
+      end
+    )
+  end
+
+  def call(conn, opts) do
+    conn
+    |> assign(:init_callback, opts[:init_callback])
+    |> super(opts)
+  end
 
   get "/" do
     conn
-    |> MCP.SSE.handle_sse()
+    |> MCP.SSE.handle_sse(init_callback: conn.assigns[:init_callback])
     |> halt()
   end
 
@@ -33,21 +46,9 @@ defmodule MCP.Router do
     |> halt()
   end
 
-  defp is_local?({127, 0, 0, _}), do: true
-  defp is_local?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
-  # ipv4 mapped ipv6 address ::ffff:127.0.0.1
-  defp is_local?({0, 0, 0, 0, 0, 65535, 32512, 1}), do: true
-  defp is_local?(_), do: false
-
-  defp check_remote_ip(conn, _opts) do
-    cond do
-      is_local?(conn.remote_ip) ->
-        conn
-
-      true ->
-        conn
-        |> send_resp(403, "Forbidden")
-        |> halt()
-    end
+  match _ do
+    conn
+    |> send_resp(404, "Route not found")
+    |> halt()
   end
 end

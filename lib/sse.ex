@@ -1,27 +1,3 @@
-# This file is based on tidewave: https://github.com/tidewave-ai/tidewave_phoenix/blob/a289afe9e88b54081d53527fdf5493b5ffa22131/lib/tidewave/mcp/sse.ex
-#
-# MIT License
-#
-# Copyright (c) 2025 kEND
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-
 defmodule MCP.SSE do
   @moduledoc false
 
@@ -31,110 +7,28 @@ defmodule MCP.SSE do
   alias MCP.Connection
   alias MCP.Server
 
-  def handle_sse(conn) do
+  def handle_sse(conn, opts) do
     session_id = generate_session_id()
     conn = fetch_query_params(conn)
 
     conn
     |> setup_sse_connection()
     |> send_initial_message(session_id)
-    |> enter_loop(session_id)
+    |> enter_loop(session_id, opts)
   end
 
   def handle_message(conn) do
-    # TODO: this function should return immediately as the response is set in the
-    # async SSE connection.
     params = conn.body_params
-
-    Logger.debug("""
-    Handle message called
-    ---
-    params: #{inspect(params, pretty: true)}
-    ---
-    """)
+    Logger.debug("SSE message received: #{inspect(params, pretty: true)}")
 
     with {:ok, session_id} <- get_session_id(conn),
          {:ok, connection_pid} <- lookup_session(session_id),
          {:ok, message} <- validate_jsonrpc_message(params) do
-      # Record client activity
-      Connection.record_activity(connection_pid)
+      :ok = Connection.handle_message(connection_pid, message)
 
-      # Handle initialization sequence
-      case message do
-        %{"method" => "initialize"} = msg ->
-          Logger.debug("""
-          Routing initialize
-          ---
-          id: #{msg["id"]}
-          msg: #{inspect(msg, pretty: true)}
-          ---
-          """)
-
-          Connection.handle_initialize(connection_pid)
-
-          case MCP.Server.handle_message(msg, connection_pid) do
-            {:ok, response} ->
-              Logger.debug("Sending SSE response: #{inspect(response, pretty: true)}")
-              Connection.send_sse_message(connection_pid, response)
-              conn |> put_status(202) |> send_json(%{status: "ok"})
-          end
-
-        %{"method" => "notifications/initialized"} ->
-          Connection.handle_initialized(connection_pid)
-          conn |> put_status(202) |> send_json(%{status: "ok"})
-
-        %{"method" => "notifications/cancelled"} ->
-          # Just log the cancellation notification and return ok
-          Logger.debug("""
-          Request cancelled
-          ---
-          params: #{inspect(message["params"], pretty: true)}
-          ---
-          """)
-
-          conn |> put_status(202) |> send_json(%{status: "ok"})
-
-        %{"id" => id, "result" => _} ->
-          case Connection.handle_result(connection_pid, id) do
-            :ok ->
-              conn |> put_status(202) |> send_json(%{status: "ok"})
-
-            {:error, :not_found} ->
-              Logger.warning("Request not found: #{inspect(message)}")
-              send_jsonrpc_error(conn, id, -32601, "Request not found")
-          end
-
-        _ ->
-          if not Map.has_key?(message, "id") do
-            conn |> put_status(202) |> send_json(%{status: "ok"})
-          else
-            # Handle requests that expect responses
-            # TODO: we can always directly reply with 202 Accepted here, the response
-            # is sent over the SSE connection
-            case Server.handle_message(message, connection_pid) do
-              {:ok, nil} ->
-                conn |> put_status(202) |> send_json(%{status: "ok"})
-
-              {:ok, response} ->
-                Logger.debug("""
-                 Sending SSE response
-                 ---
-                #{inspect(response, pretty: true)}
-                """)
-
-                Connection.send_sse_message(connection_pid, response)
-                conn |> put_status(202) |> send_json(%{status: "ok"})
-
-              {:error, error_response} ->
-                Logger.warning("Error handling message: #{inspect(error_response)}")
-                # Send error response via SSE to match JSON-RPC 2.0 spec
-                Connection.send_sse_message(connection_pid, error_response)
-                # we still reply with 202, because some clients abort the connection
-                # when they receive a non-200 response
-                conn |> put_status(202) |> send_json(%{status: "ok"})
-            end
-          end
-      end
+      conn
+      |> put_status(202)
+      |> send_json(%{status: "ok"})
     else
       {:error, :missing_session} ->
         Logger.warning("Missing session ID in request")
@@ -150,7 +44,7 @@ defmodule MCP.SSE do
 
       {:error, :invalid_jsonrpc} ->
         Logger.warning("Invalid JSON-RPC message format")
-        send_jsonrpc_error(conn, nil, -32600, "Could not parse message")
+        send_error(conn, 400, "Invalid JSON-RPC message format")
     end
   end
 
@@ -166,25 +60,6 @@ defmodule MCP.SSE do
     |> send_resp(status, JSON.encode!(%{error: message}))
   end
 
-  defp send_jsonrpc_error(conn, id, code, message, data \\ nil) do
-    error = %{
-      code: code,
-      message: message
-    }
-
-    error = if data, do: Map.put(error, :data, data), else: error
-
-    response = %{
-      jsonrpc: "2.0",
-      id: id,
-      error: error
-    }
-
-    conn
-    |> put_resp_content_type("application/json")
-    |> send_resp(200, JSON.encode!(response))
-  end
-
   defp setup_sse_connection(conn) do
     conn
     |> put_resp_header("cache-control", "no-cache")
@@ -194,8 +69,10 @@ defmodule MCP.SSE do
   end
 
   defp send_initial_message(conn, session_id) do
+    path = Path.join(conn.path_info ++ ["message"])
+
     endpoint =
-      "#{conn.scheme}://#{conn.host}:#{conn.port}/mcp/message?sessionId=#{session_id}"
+      "#{conn.scheme}://#{conn.host}:#{conn.port}/#{path}?sessionId=#{session_id}"
 
     case chunk(conn, "event: endpoint\ndata: #{endpoint}\n\n") do
       {:ok, conn} -> conn
@@ -203,10 +80,10 @@ defmodule MCP.SSE do
     end
   end
 
-  defp enter_loop(conn, session_id) do
+  defp enter_loop(conn, session_id, opts) do
     try do
       Registry.register(MCP.Registry, session_id, [])
-      Connection.init({session_id, conn})
+      Connection.init({session_id, conn, opts})
     catch
       :exit, :normal -> conn
       :exit, :shutdown -> conn
