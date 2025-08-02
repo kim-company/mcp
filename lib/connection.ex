@@ -56,7 +56,7 @@ defmodule MCP.Connection do
   @impl GenServer
   def handle_continue({:handle_initialize, id, params}, state) do
     with :ok <- validate_protocol_version(params["protocolVersion"]),
-         {:ok, %{tools: tools, server_info: server_info}} <- state.init_callback.(params) do
+         {:ok, %{tools: tools, server_info: server_info}} <- state.init_callback.(state.session_id, params) do
       %{
         protocolVersion: @protocol_version,
         capabilities: %{
