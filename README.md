@@ -16,6 +16,65 @@ This library provides a complete MCP server implementation built on OTP principl
 - **Async Tool Execution**: Non-blocking tool execution with proper timeout handling
 - **Flexible Tool Definition**: Support for both atom and string keys in tool specifications
 
+## Protocol Implementation Status
+
+This section tracks implementation of the MCP 2024-11-05 specification for tools:
+
+### ✅ Core Protocol
+- [x] Server-Sent Events (SSE) transport layer
+- [x] JSON-RPC 2.0 message protocol
+- [x] Session management with unique session IDs
+- [x] Connection lifecycle management
+- [x] Protocol version negotiation (2024-11-05)
+
+### ✅ Initialization
+- [x] `initialize` method with protocol version validation
+- [x] Server capabilities declaration
+- [x] Client capabilities handling
+- [x] Server info response (name, version)
+- [x] `notifications/initialized` completion
+
+### ✅ Tools Protocol
+- [x] Tools capability declaration in server capabilities
+- [x] Tool definition with name, description, input schema
+- [x] Tool validation during initialization
+- [x] `tools/list` method for tool discovery
+- [x] `tools/call` method for tool execution
+- [x] Pagination support with cursor parameter
+- [x] Tool callback execution with proper response format
+- [x] Error handling for unknown tools
+- [x] Tool execution error reporting with `isError` flag
+
+### ✅ Content Types
+- [x] Text content support (`type: "text"`)
+- [x] Content array responses
+- [x] Error content with `isError` flag
+
+### ✅ Error Handling
+- [x] JSON-RPC 2.0 error responses
+- [x] Protocol-level error codes (-32600, -32601, -32602)
+- [x] Tool execution error handling
+- [x] Invalid tool specification validation
+- [x] Missing required parameter handling
+
+### ✅ Security & Validation
+- [x] Input validation for tool schemas
+- [x] Tool specification validation (required fields)
+- [x] JSON Schema compliance for input schemas
+- [x] Argument validation during tool calls
+
+### ❌ Not Implemented
+- [ ] `listChanged` notification capability
+- [ ] Image content support (`type: "image"`)
+- [ ] Resource content support (`type: "resource"`)
+- [ ] Advanced pagination features
+- [ ] Rate limiting for tool invocations
+- [ ] Access control mechanisms
+- [ ] Tool execution timeouts
+
+### 🔄 Partial Implementation
+- [ ] **Tool input validation**: Basic validation implemented, but full JSON Schema validation against tool input schemas not enforced during `tools/call`
+
 ## Installation
 
 Add `mcp` to your list of dependencies in `mix.exs`:
