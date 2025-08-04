@@ -101,19 +101,22 @@ defmodule MCP.IntegrationTest do
     # Define some test tools
     tools = [
       %{
-        name: "list_activities",
-        description: "Returns all activities from categories",
-        input_schema: %{
-          type: "object",
-          required: ["is_today"],
-          properties: %{
-            is_today: %{
-              type: "boolean",
-              default: true,
-              description: "Whether the activity is scheduled for today"
+        spec: %{
+          "name" => "list_activities",
+          "description" => "Returns all activities from categories",
+          "inputSchema" => %{
+            "type" => "object",
+            "required" => ["is_today"],
+            "properties" => %{
+              "is_today" => %{
+                "type" => "boolean",
+                "default" => true,
+                "description" => "Whether the activity is scheduled for today"
+              }
             }
           }
-        }
+        },
+        callback: nil
       }
     ]
 
@@ -151,9 +154,12 @@ defmodule MCP.IntegrationTest do
 
     tools = [
       %{
-        name: "get_activity",
-        description: "Returns activity details",
-        input_schema: %{"type" => "object"}
+        spec: %{
+          "name" => "get_activity",
+          "description" => "Returns activity details",
+          "inputSchema" => %{"type" => "object"}
+        },
+        callback: nil
       }
     ]
 
@@ -197,20 +203,22 @@ defmodule MCP.IntegrationTest do
     # Define test tools with detailed schemas and callbacks
     tools = [
       %{
-        name: "echo_message",
-        description: "Echoes back the provided message with a prefix",
-        input_schema: %{
-          type: "object",
-          required: ["message"],
-          properties: %{
-            message: %{
-              type: "string",
-              description: "The message to echo back"
-            },
-            prefix: %{
-              type: "string",
-              description: "Optional prefix to add to the message",
-              default: "Echo:"
+        spec: %{
+          "name" => "echo_message",
+          "description" => "Echoes back the provided message with a prefix",
+          "inputSchema" => %{
+            "type" => "object",
+            "required" => ["message"],
+            "properties" => %{
+              "message" => %{
+                "type" => "string",
+                "description" => "The message to echo back"
+              },
+              "prefix" => %{
+                "type" => "string",
+                "description" => "Optional prefix to add to the message",
+                "default" => "Echo:"
+              }
             }
           }
         },
@@ -230,14 +238,16 @@ defmodule MCP.IntegrationTest do
         end
       },
       %{
-        name: "calculate_sum",
-        description: "Calculates the sum of two numbers",
-        input_schema: %{
-          type: "object",
-          required: ["a", "b"],
-          properties: %{
-            a: %{type: "number", description: "First number"},
-            b: %{type: "number", description: "Second number"}
+        spec: %{
+          "name" => "calculate_sum",
+          "description" => "Calculates the sum of two numbers",
+          "inputSchema" => %{
+            "type" => "object",
+            "required" => ["a", "b"],
+            "properties" => %{
+              "a" => %{"type" => "number", "description" => "First number"},
+              "b" => %{"type" => "number", "description" => "Second number"}
+            }
           }
         },
         callback: fn arguments ->
@@ -462,9 +472,12 @@ defmodule MCP.IntegrationTest do
     tools =
       Enum.map(1..5, fn i ->
         %{
-          name: "tool_#{i}",
-          description: "Tool number #{i}",
-          input_schema: %{type: "object", properties: %{}}
+          spec: %{
+            "name" => "tool_#{i}",
+            "description" => "Tool number #{i}",
+            "inputSchema" => %{"type" => "object", "properties" => %{}}
+          },
+          callback: nil
         }
       end)
 
@@ -500,13 +513,15 @@ defmodule MCP.IntegrationTest do
   test "tools/call with missing required arguments", %{sse_req: sse_req} do
     tools = [
       %{
-        name: "require_args_tool",
-        description: "Tool that requires arguments",
-        input_schema: %{
-          type: "object",
-          required: ["required_arg"],
-          properties: %{
-            required_arg: %{type: "string", description: "Required argument"}
+        spec: %{
+          "name" => "require_args_tool",
+          "description" => "Tool that requires arguments",
+          "inputSchema" => %{
+            "type" => "object",
+            "required" => ["required_arg"],
+            "properties" => %{
+              "required_arg" => %{"type" => "string", "description" => "Required argument"}
+            }
           }
         },
         callback: fn _arguments ->
@@ -533,9 +548,11 @@ defmodule MCP.IntegrationTest do
   test "tools/call with tool returning error", %{sse_req: sse_req} do
     tools = [
       %{
-        name: "error_tool",
-        description: "Tool that returns an error",
-        input_schema: %{type: "object", properties: %{}},
+        spec: %{
+          "name" => "error_tool",
+          "description" => "Tool that returns an error",
+          "inputSchema" => %{"type" => "object", "properties" => %{}}
+        },
         callback: fn _arguments ->
           {:ok,
            %{
@@ -650,9 +667,11 @@ defmodule MCP.IntegrationTest do
   test "initialize before calling tools", %{sse_req: sse_req} do
     tools = [
       %{
-        name: "test_tool",
-        description: "Test tool",
-        input_schema: %{type: "object", properties: %{}},
+        spec: %{
+          "name" => "test_tool",
+          "description" => "Test tool",
+          "inputSchema" => %{"type" => "object", "properties" => %{}}
+        },
         callback: fn _arguments ->
           {:ok, %{content: [%{type: "text", text: "Tool result"}]}}
         end
@@ -672,12 +691,14 @@ defmodule MCP.IntegrationTest do
   test "multiple tool calls in sequence", %{sse_req: sse_req} do
     tools = [
       %{
-        name: "counter",
-        description: "Returns incrementing numbers",
-        input_schema: %{
-          type: "object",
-          properties: %{
-            start: %{type: "number", default: 0}
+        spec: %{
+          "name" => "counter",
+          "description" => "Returns incrementing numbers",
+          "inputSchema" => %{
+            "type" => "object",
+            "properties" => %{
+              "start" => %{"type" => "number", "default" => 0}
+            }
           }
         },
         callback: fn arguments ->
@@ -707,19 +728,21 @@ defmodule MCP.IntegrationTest do
   test "tools with complex input schemas", %{sse_req: sse_req} do
     tools = [
       %{
-        name: "complex_tool",
-        description: "Tool with complex input schema",
-        input_schema: %{
-          type: "object",
-          required: ["name"],
-          properties: %{
-            name: %{type: "string", minLength: 1},
-            age: %{type: "integer", minimum: 0, maximum: 150},
-            preferences: %{
-              type: "object",
-              properties: %{
-                color: %{type: "string", enum: ["red", "green", "blue"]},
-                numbers: %{type: "array", items: %{type: "number"}}
+        spec: %{
+          "name" => "complex_tool",
+          "description" => "Tool with complex input schema",
+          "inputSchema" => %{
+            "type" => "object",
+            "required" => ["name"],
+            "properties" => %{
+              "name" => %{"type" => "string", "minLength" => 1},
+              "age" => %{"type" => "integer", "minimum" => 0, "maximum" => 150},
+              "preferences" => %{
+                "type" => "object",
+                "properties" => %{
+                  "color" => %{"type" => "string", "enum" => ["red", "green", "blue"]},
+                  "numbers" => %{"type" => "array", "items" => %{"type" => "number"}}
+                }
               }
             }
           }
@@ -867,8 +890,8 @@ defmodule MCP.IntegrationTest do
     # Define invalid tools (missing required fields)
     invalid_tools = [
       %{
-        # Missing name and description
-        input_schema: %{"type" => "object"}
+        # Missing spec field - this will trigger the :spec validation error
+        callback: nil
       }
     ]
 
@@ -883,19 +906,21 @@ defmodule MCP.IntegrationTest do
     # invalid_params error code
     error_data = expect_rpc_error(sse_resp, -32602)
     assert error_data["error"]["message"] =~ "Invalid tool specification"
-    assert error_data["error"]["message"] =~ "name"
+    assert error_data["error"]["message"] =~ ":spec field"
   end
 
   test "tool validation during initialization with valid tools", %{sse_req: sse_req} do
     # Define valid tools
     valid_tools = [
       %{
-        name: "valid_tool",
-        description: "A valid tool",
-        input_schema: %{
-          "type" => "object",
-          "properties" => %{
-            "param" => %{"type" => "string"}
+        spec: %{
+          "name" => "valid_tool",
+          "description" => "A valid tool",
+          "inputSchema" => %{
+            "type" => "object",
+            "properties" => %{
+              "param" => %{"type" => "string"}
+            }
           }
         },
         callback: fn _args -> {:ok, %{content: [%{type: "text", text: "success"}]}} end

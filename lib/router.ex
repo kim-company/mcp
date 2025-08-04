@@ -62,12 +62,19 @@ defmodule MCP.Router do
 
   ### Tool Specification
 
-  Each tool in the tools list must be a map with the following keys:
+  Each tool in the tools list must be a map with the following structure:
 
-  * `:name` or `"name"` - String. The name of the tool (must be unique)
-  * `:description` or `"description"` - String. A description of what the tool does
-  * `:input_schema` or `"input_schema"` - Map. A JSON Schema defining the tool's input parameters
-  * `:callback` or `"callback"` - Function/1 or nil. The function to call when the tool is executed
+  * `:spec` - Map. The MCP tool specification with string keys as defined in the MCP protocol
+  * `:callback` - Function/1 or nil. The function to call when the tool is executed
+
+  The `:spec` field must contain a map conforming to the MCP tool specification:
+
+  * `"name"` - String. The name of the tool (must be unique)
+  * `"inputSchema"` - Map. A JSON Schema defining the tool's input parameters (must have "type" field)
+  * `"description"` - String (optional). A description of what the tool does
+  * `"title"` - String (optional). A human-readable title for the tool
+  * `"outputSchema"` - Map (optional). A JSON Schema defining the tool's output format
+  * `"annotations"` - Map (optional). Hints about tool behavior
 
   The callback function, if provided, should accept a map of arguments and return
   `{:ok, result}` or `{:error, reason}`.
@@ -77,14 +84,16 @@ defmodule MCP.Router do
       def my_init_callback(session_id, _init_params) do
         tools = [
           %{
-            name: "echo",
-            description: "Echoes back the input text",
-            input_schema: %{
-              "type" => "object",
-              "properties" => %{
-                "text" => %{"type" => "string", "description" => "Text to echo"}
-              },
-              "required" => ["text"]
+            spec: %{
+              "name" => "echo",
+              "description" => "Echoes back the input text",
+              "inputSchema" => %{
+                "type" => "object",
+                "properties" => %{
+                  "text" => %{"type" => "string", "description" => "Text to echo"}
+                },
+                "required" => ["text"]
+              }
             },
             callback: fn %{"text" => text} ->
               {:ok, %{content: [%{type: "text", text: text}]}}

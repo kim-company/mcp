@@ -14,7 +14,7 @@ This library provides a complete MCP server implementation built on OTP principl
 - **Fault Tolerant**: Built on OTP with proper supervision and error handling
 - **Session Management**: UUID-based session tracking with automatic cleanup
 - **Async Tool Execution**: Non-blocking tool execution with proper timeout handling
-- **Flexible Tool Definition**: Support for both atom and string keys in tool specifications
+- **Clean Tool Definition**: MCP-compliant tool specifications with proper type validation
 
 ## Protocol Implementation Status
 
@@ -98,17 +98,19 @@ defmodule MyApp.MCPTools do
   def init_callback(_session_id, _init_params) do
     tools = [
       %{
-        name: "echo",
-        description: "Echoes back the input text",
-        input_schema: %{
-          "type" => "object",
-          "properties" => %{
-            "text" => %{
-              "type" => "string", 
-              "description" => "Text to echo back"
-            }
-          },
-          "required" => ["text"]
+        spec: %{
+          "name" => "echo",
+          "description" => "Echoes back the input text",
+          "inputSchema" => %{
+            "type" => "object",
+            "properties" => %{
+              "text" => %{
+                "type" => "string", 
+                "description" => "Text to echo back"
+              }
+            },
+            "required" => ["text"]
+          }
         },
         callback: fn %{"text" => text} ->
           {:ok, %{
@@ -119,9 +121,11 @@ defmodule MyApp.MCPTools do
         end
       },
       %{
-        name: "get_time",
-        description: "Returns the current time",
-        input_schema: %{"type" => "object", "properties" => %{}},
+        spec: %{
+          "name" => "get_time",
+          "description" => "Returns the current time",
+          "inputSchema" => %{"type" => "object", "properties" => %{}}
+        },
         callback: fn _args ->
           time = DateTime.utc_now() |> DateTime.to_string()
           {:ok, %{
@@ -200,25 +204,39 @@ Clients connect to your server by:
 
 ### Tool Specification Format
 
-Tools must include these fields:
+Tools must follow this structure:
 
 ```elixir
 %{
-  name: "tool_name",                    # Unique identifier
-  description: "What the tool does",    # Human-readable description  
-  input_schema: %{                      # JSON Schema for parameters
-    "type" => "object",
-    "properties" => %{
-      "param1" => %{"type" => "string"}
-    },
-    "required" => ["param1"]
+  spec: %{                              # MCP-compliant tool specification
+    "name" => "tool_name",              # Unique identifier (string)
+    "description" => "What the tool does", # Human-readable description (optional)
+    "inputSchema" => %{                 # JSON Schema for parameters
+      "type" => "object",
+      "properties" => %{
+        "param1" => %{"type" => "string"}
+      },
+      "required" => ["param1"]
+    }
   },
-  callback: fn args ->                  # Function to execute
+  callback: fn args ->                  # Function to execute (optional)
     # Tool logic here
     {:ok, result} | {:error, reason}
   end
 }
 ```
+
+**Key Requirements:**
+- `spec` field contains the MCP tool specification with string keys
+- `spec["name"]` and `spec["inputSchema"]` are required
+- `spec["inputSchema"]` must have a `"type"` field
+- `callback` is optional and should be a function/1 or nil
+
+**Benefits of This Structure:**
+- **Protocol Compliant**: Tool specs are stored exactly as defined in the MCP specification
+- **No Key Conversion**: Eliminates the need to convert between atom and string keys
+- **Type Safe**: Clear separation between MCP specification and internal callback logic
+- **Validation Friendly**: Direct validation against MCP schema requirements
 
 ### Tool Callback Return Format
 
@@ -276,28 +294,6 @@ config :mcp,
   host: "localhost"
 ```
 
-### Development Commands
-
-```bash
-# Install dependencies
-mix deps.get
-
-# Compile project
-mix compile
-
-# Run server
-mix run --no-halt
-
-# Run tests
-mix test
-
-# Interactive shell
-iex -S mix
-
-# Format code
-mix format
-```
-
 ## Error Handling
 
 The server handles errors gracefully:
@@ -306,6 +302,7 @@ The server handles errors gracefully:
 - **Tool Errors**: Tool execution failures are returned as successful responses with `isError: true`
 - **Timeouts**: Connections that don't initialize or remain inactive are automatically closed
 - **Process Crashes**: Supervision tree ensures failed processes are restarted
+
 
 ## Advanced Usage
 

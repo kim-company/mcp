@@ -11,9 +11,7 @@ defmodule MCP.Connection do
           {:ok, %{tools: list(tool_spec()), server_info: map()}} | {:error, String.t()}
 
   @type tool_spec :: %{
-          name: String.t(),
-          description: String.t(),
-          input_schema: map(),
+          spec: map(),
           callback: (map() -> {:ok, any()} | {:error, String.t()}) | nil
         }
 
@@ -468,15 +466,15 @@ defmodule MCP.Connection do
 
   This function performs comprehensive validation of tool specifications, checking:
 
-  - Required fields are present (:name, :description, :input_schema)
-  - Field types are correct (name and description must be non-empty strings)
-  - Input schema is a valid JSON Schema map
+  - Tool spec has required :spec and :callback fields
+  - MCP spec has required "name" and "inputSchema" fields (string keys)
+  - Field types are correct (name must be non-empty string)
+  - Input schema is a valid JSON Schema map with "type" field
   - Callback is either a function/1 or nil
-  - Supports both atom and string keys for flexibility
 
   ## Parameters
 
-  * `tool_spec` - A map containing the tool specification
+  * `tool_spec` - A map containing the tool specification with :spec and :callback fields
 
   ## Returns
 
@@ -486,23 +484,25 @@ defmodule MCP.Connection do
   ## Examples
 
       iex> MCP.Connection.validate_tool_spec(%{
-      ...>   name: "test_tool",
-      ...>   description: "A test tool",
-      ...>   input_schema: %{"type" => "object"},
+      ...>   spec: %{
+      ...>     "name" => "test_tool",
+      ...>     "description" => "A test tool",
+      ...>     "inputSchema" => %{"type" => "object"}
+      ...>   },
       ...>   callback: fn _args -> {:ok, %{}} end
       ...> })
       :ok
 
-      iex> MCP.Connection.validate_tool_spec(%{name: ""})
+      iex> MCP.Connection.validate_tool_spec(%{spec: %{"name" => ""}})
       {:error, "Tool name must be a non-empty string"}
   """
   @spec validate_tool_spec(map()) :: :ok | {:error, String.t()}
   def validate_tool_spec(tool_spec) when is_map(tool_spec) do
     try do
       %{}
-      |> parse_tool_name(tool_spec)
-      |> parse_tool_description(tool_spec)
-      |> parse_tool_input_schema(tool_spec)
+      |> parse_tool_spec_structure(tool_spec)
+      |> parse_mcp_spec_name(tool_spec.spec)
+      |> parse_mcp_spec_input_schema(tool_spec.spec)
       |> parse_tool_callback(tool_spec)
 
       :ok
@@ -514,13 +514,25 @@ defmodule MCP.Connection do
 
   def validate_tool_spec(_), do: {:error, "Tool specification must be a map"}
 
-  defp parse_tool_name(parsed_tool, tool_spec) do
-    # Handle both atom and string keys
-    name = tool_spec[:name] || tool_spec["name"]
+  defp parse_tool_spec_structure(parsed_tool, tool_spec) do
+    cond do
+      not Map.has_key?(tool_spec, :spec) ->
+        raise ToolParseException, "Tool specification must include a :spec field"
+
+      not is_map(tool_spec.spec) ->
+        raise ToolParseException, "Tool :spec field must be a map"
+
+      true ->
+        parsed_tool
+    end
+  end
+
+  defp parse_mcp_spec_name(parsed_tool, mcp_spec) do
+    name = mcp_spec["name"]
 
     cond do
       is_nil(name) ->
-        raise ToolParseException, "Tool specification must include a 'name' field"
+        raise ToolParseException, "MCP tool specification must include a 'name' field"
 
       not is_binary(name) ->
         raise ToolParseException, "Tool name must be a non-empty string"
@@ -529,101 +541,90 @@ defmodule MCP.Connection do
         raise ToolParseException, "Tool name must be a non-empty string"
 
       true ->
-        Map.put(parsed_tool, :name, name)
+        parsed_tool
     end
   end
 
-  defp parse_tool_description(parsed_tool, tool_spec) do
-    # Handle both atom and string keys
-    description = tool_spec[:description] || tool_spec["description"]
-
-    cond do
-      is_nil(description) ->
-        raise ToolParseException, "Tool specification must include a 'description' field"
-
-      not is_binary(description) ->
-        raise ToolParseException, "Tool description must be a non-empty string"
-
-      description == "" ->
-        raise ToolParseException, "Tool description must be a non-empty string"
-
-      true ->
-        Map.put(parsed_tool, :description, description)
-    end
-  end
-
-  defp parse_tool_input_schema(parsed_tool, tool_spec) do
-    # Handle both atom and string keys
-    schema = tool_spec[:input_schema] || tool_spec["input_schema"]
+  defp parse_mcp_spec_input_schema(parsed_tool, mcp_spec) do
+    schema = mcp_spec["inputSchema"]
 
     cond do
       is_nil(schema) ->
-        raise ToolParseException, "Tool specification must include an 'input_schema' field"
+        raise ToolParseException, "MCP tool specification must include an 'inputSchema' field"
 
       not is_map(schema) ->
-        raise ToolParseException, "Tool input_schema must be a map"
+        raise ToolParseException, "Tool inputSchema must be a map"
 
       true ->
-        case validate_json_schema_structure(schema) do
+        case validate_mcp_input_schema(schema) do
           :ok ->
-            Map.put(parsed_tool, :input_schema, schema)
+            parsed_tool
 
           {:error, reason} ->
-            raise ToolParseException, "Invalid input_schema: #{reason}"
+            raise ToolParseException, "Invalid inputSchema: #{reason}"
         end
     end
   end
 
   defp parse_tool_callback(parsed_tool, tool_spec) do
-    # Handle both atom and string keys
-    callback = tool_spec[:callback] || tool_spec["callback"]
+    callback = tool_spec[:callback]
 
     cond do
       is_nil(callback) ->
-        Map.put(parsed_tool, :callback, nil)
+        parsed_tool
 
       is_function(callback, 1) ->
-        Map.put(parsed_tool, :callback, callback)
+        parsed_tool
 
       true ->
         raise ToolParseException, "Tool callback must be a function/1 or nil"
     end
   end
 
-  defp validate_json_schema_structure(schema) when is_map(schema) do
-    # Basic JSON Schema validation - check for required type field if properties are present
-    case schema do
-      %{"properties" => props} when is_map(props) ->
-        case Map.get(schema, "type") do
-          "object" -> :ok
-          nil -> {:error, "schema with 'properties' must have type 'object'"}
-          _ -> {:error, "schema with 'properties' must have type 'object'"}
+  defp validate_mcp_input_schema(schema) when is_map(schema) do
+    # Validate MCP input schema - must have "type" field
+    case Map.get(schema, "type") do
+      nil ->
+        {:error, "inputSchema must have a 'type' field"}
+
+      type when is_binary(type) ->
+        # Additional validation for object type with properties
+        case type do
+          "object" ->
+            validate_object_schema_properties(schema)
+
+          _ ->
+            :ok
         end
 
       _ ->
-        :ok
+        {:error, "inputSchema 'type' must be a string"}
     end
   end
 
-  defp validate_json_schema_structure(_), do: {:error, "schema must be a map"}
+  defp validate_mcp_input_schema(_), do: {:error, "inputSchema must be a map"}
+
+  defp validate_object_schema_properties(schema) do
+    case Map.get(schema, "properties") do
+      nil ->
+        :ok
+
+      props when is_map(props) ->
+        :ok
+
+      _ ->
+        {:error, "inputSchema 'properties' must be a map"}
+    end
+  end
 
   @doc """
   Converts an internal tool specification to the MCP protocol format.
 
-  Removes the internal :callback field and converts atom keys to string keys.
+  Simply extracts the spec field since it already contains the MCP-compliant format.
   """
   @spec marshal_tool_spec(tool_spec()) :: map()
   def marshal_tool_spec(tool_spec) do
-    tool_spec
-    |> Map.drop([:callback, "callback"])
-    |> Map.new(fn
-      {:name, v} -> {"name", v}
-      {:description, v} -> {"description", v}
-      {:input_schema, v} -> {"inputSchema", v}
-      {"input_schema", v} -> {"inputSchema", v}
-      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
-      {k, v} -> {k, v}
-    end)
+    tool_spec.spec
   end
 
   defp build_dispatch_table(tools) do
@@ -638,7 +639,7 @@ defmodule MCP.Connection do
     case validate_tool_spec(tool) do
       :ok ->
         # Extract callback from tool
-        {callback, _} = Map.pop(tool, :callback)
+        callback = tool[:callback]
 
         # Marshal tool to MCP format (without callback)
         tool_schema = marshal_tool_spec(tool)
@@ -649,7 +650,7 @@ defmodule MCP.Connection do
         # Add to dispatch table if callback exists
         new_dispatch =
           if callback do
-            Map.put(dispatch, tool.name, callback)
+            Map.put(dispatch, tool.spec["name"], callback)
           else
             dispatch
           end
