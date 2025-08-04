@@ -660,34 +660,4 @@ defmodule MCP.Connection do
         {:error, "Invalid tool specification: #{reason}"}
     end
   end
-
-  # defp safe_call_tool(request_id, params, state_pid) do
-  #     handle_call_tool(request_id, params, state_pid)
-  #   catch
-  #     kind, reason ->
-  #       # tool exceptions should be treated as successful response with isError: true
-  #       # https://spec.modelcontextprotocol.io/specification/2024-11-05/server/tools/#error-handling
-  #       {:ok,
-  #        %{
-  #          jsonrpc: "2.0",
-  #          id: request_id,
-  #          result: %{
-  #            content: [
-  #              %{
-  #                type: "text",
-  #                text: "Failed to call tool: #{Exception.format(kind, reason, __STACKTRACE__)}"
-  #              }
-  #            ],
-  #            isError: true
-  #          }
-  #        }}
-  #   end
-  # defp result_or_error(request_id, {:error, message}) when is_binary(message) do
-  #   # tool errors should be treated as successful response with isError: true
-  #   # https://spec.modelcontextprotocol.io/specification/2024-11-05/server/tools/#error-handling
-  #   result_or_error(
-  #     request_id,
-  #     {:ok, %{content: [%{type: "text", text: message}], isError: true}}
-  #   )
-  # end
 end
