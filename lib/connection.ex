@@ -45,6 +45,8 @@ defmodule MCP.Connection do
     # Start inactivity timeout
     timeout_ref = Process.send_after(self(), :inactivity_timeout, @inactivity_timeout)
 
+    Logger.info("Opening SSE Connection")
+
     :gen_server.enter_loop(__MODULE__, [], %{
       session_id: session_id,
       conn: conn,
@@ -65,7 +67,7 @@ defmodule MCP.Connection do
   @doc """
   Checks if a connection is ready to receive MCP requests.
 
-  A connection is considered ready after the client has sent both the `initialize` 
+  A connection is considered ready after the client has sent both the `initialize`
   request and the `notifications/initialized` notification.
 
   ## Parameters
@@ -360,8 +362,9 @@ defmodule MCP.Connection do
     end
   end
 
-  defp schedule_next_ping(%{sse_keepalive_timeout: timeout}) do
+  defp schedule_next_ping(%{sse_keepalive_timeout: timeout} = state) do
     Process.send_after(self(), :send_ping, timeout)
+    state
   end
 
   defp record_activity(state) do
@@ -419,10 +422,12 @@ defmodule MCP.Connection do
       |> handle_sse_response(state, "close")
 
     case resp do
-      {:noreply, state} ->
+      {:stop, reason, state} ->
         halt(state.conn)
         {:stop, reason, state}
-        {:stop, reason, state}
+
+      {:noreply, state} ->
+        halt(state.conn)
         {:stop, reason, state}
     end
   end

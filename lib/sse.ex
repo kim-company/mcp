@@ -83,7 +83,7 @@ defmodule MCP.SSE do
   end
 
   defp send_initial_message(conn, session_id) do
-    path = Path.join(conn.path_info ++ ["message"])
+    path = Path.join([conn.request_path, "message"])
 
     endpoint =
       "#{conn.scheme}://#{conn.host}:#{conn.port}/#{path}?sessionId=#{session_id}"
