@@ -157,14 +157,27 @@ Configure the MCP router in your Phoenix endpoint or Plug pipeline:
 Use the `MCP.Router` module with `forward` to mount the MCP router at a specific path:
 
 ```elixir
-# In your Phoenix endpoint or main router
-defmodule MyAppWeb.Endpoint do
-  use Phoenix.Endpoint, otp_app: :my_app
+# In your config.exs
+config :mime, :types, %{
+  "text/event-stream" => ["sse"]
+}
 
-  # Forward MCP requests to the MCP.Plug module
-  forward "/mcp/sse", MCP.Router, init_callback: &MyApp.MCPTools.init_callback/2
+# In your Phoenix router
+defmodule MyAppWeb.Router do
+  use MyAppWeb, :router
+
+  pipeline :mcp_sse do
+    plug accepts: ["sse"]
+  end
+
+  # Forward MCP requests to the MCP.Router
+  scope "/mcp/sse" do
+    pipe_through :mcp_sse
+    
+    forward "/", MCP.Router, init_callback: &MyApp.MCPTools.init_callback/2
+  end
   
-  # Your other plugs...
+  # Your other routes...
 end
 ```
 

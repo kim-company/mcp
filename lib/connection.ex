@@ -45,6 +45,8 @@ defmodule MCP.Connection do
     # Start inactivity timeout
     timeout_ref = Process.send_after(self(), :inactivity_timeout, @inactivity_timeout)
 
+    Logger.info("Opening SSE Connection")
+
     :gen_server.enter_loop(__MODULE__, [], %{
       session_id: session_id,
       conn: conn,
@@ -420,6 +422,10 @@ defmodule MCP.Connection do
       |> handle_sse_response(state, "close")
 
     case resp do
+      {:stop, reason, state} ->
+        halt(state.conn)
+        {:stop, reason, state}
+
       {:noreply, state} ->
         halt(state.conn)
         {:stop, reason, state}
