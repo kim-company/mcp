@@ -360,8 +360,9 @@ defmodule MCP.Connection do
     end
   end
 
-  defp schedule_next_ping(%{sse_keepalive_timeout: timeout}) do
+  defp schedule_next_ping(%{sse_keepalive_timeout: timeout} = state) do
     Process.send_after(self(), :send_ping, timeout)
+    state
   end
 
   defp record_activity(state) do
