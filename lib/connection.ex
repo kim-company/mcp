@@ -65,7 +65,7 @@ defmodule MCP.Connection do
   @doc """
   Checks if a connection is ready to receive MCP requests.
 
-  A connection is considered ready after the client has sent both the `initialize` 
+  A connection is considered ready after the client has sent both the `initialize`
   request and the `notifications/initialized` notification.
 
   ## Parameters
@@ -422,8 +422,6 @@ defmodule MCP.Connection do
     case resp do
       {:noreply, state} ->
         halt(state.conn)
-        {:stop, reason, state}
-        {:stop, reason, state}
         {:stop, reason, state}
     end
   end
