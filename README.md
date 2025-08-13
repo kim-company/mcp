@@ -152,19 +152,41 @@ end
 
 Configure the MCP router in your Phoenix endpoint or Plug pipeline:
 
+#### Option 1: Using forward 
+
+Use the `MCP.Router` module with `forward` to mount the MCP router at a specific path:
+
+```elixir
+# In your Phoenix endpoint or main router
+defmodule MyAppWeb.Endpoint do
+  use Phoenix.Endpoint, otp_app: :my_app
+
+  # Forward MCP requests to the MCP.Plug module
+  forward "/mcp/sse", MCP.Router, init_callback: &MyApp.MCPTools.init_callback/2
+  
+  # Your other plugs...
+end
+```
+
+This makes the MCP router available at:
+- `GET /mcp/sse` - Establishes an SSE connection
+- `POST /mcp/sse/message` - Receives JSON-RPC messages
+
+#### Option 2: Direct plug usage
+
 ```elixir
 # In your Phoenix endpoint
 defmodule MyAppWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :my_app
 
-  # Add the MCP router
+  # Add the MCP router directly
   plug MCP.Router, init_callback: &MyApp.MCPTools.init_callback/2
   
   # Your other plugs...
 end
 ```
 
-Or use it standalone with Bandit:
+#### Option 3: Standalone with Bandit
 
 ```elixir
 # In your application.ex
