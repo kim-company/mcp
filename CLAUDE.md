@@ -22,9 +22,6 @@ iex -S mix
 # Run tests
 mix test
 
-# Run async behavior tests specifically
-elixir test_async.exs
-
 # Check code formatting
 mix format --check-formatted
 
@@ -58,6 +55,7 @@ This is an Elixir implementation of the Model Context Protocol (MCP) server that
 - **Timeout Handling**: 30-second initialization timeout, 30-minute inactivity timeout
 - **JSON-RPC 2.0**: Full compliance with request/response/notification patterns
 - **Protocol Version**: Implements MCP 2024-11-05 specification
+- **Phoenix Integration**: Supports mount prefixes via `forward` routing
 
 ### Configuration
 
@@ -79,6 +77,6 @@ config :mcp,
 ### Test Structure
 
 - `test/mcp/integration_test.exs`: Integration tests for MCP protocol
-- `test_async.exs`: Async behavior tests (run separately with `elixir test_async.exs`)
+- `test/mcp/connection_test.exs`: Unit tests for Connection GenServer
 
 The codebase follows standard Elixir/OTP patterns with GenServers for stateful processes, Plug for HTTP handling, and supervision trees for fault tolerance.

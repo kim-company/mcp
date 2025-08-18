@@ -83,10 +83,12 @@ defmodule MCP.SSE do
   end
 
   defp send_initial_message(conn, session_id) do
-    path = Path.join(conn.path_info ++ ["message"])
+    # Phoenix stores mount prefix in script_name when using forward
+    full_path_segments = conn.script_name ++ conn.path_info ++ ["message"]
+    message_path = "/" <> Enum.join(full_path_segments, "/")
 
     endpoint =
-      "#{conn.scheme}://#{conn.host}:#{conn.port}/#{path}?sessionId=#{session_id}"
+      "#{conn.scheme}://#{conn.host}:#{conn.port}#{message_path}?sessionId=#{session_id}"
 
     case chunk(conn, "event: endpoint\ndata: #{endpoint}\n\n") do
       {:ok, conn} -> conn
